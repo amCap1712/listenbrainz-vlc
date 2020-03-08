@@ -8,6 +8,10 @@ libaudioscrobbler_plugin_la_SOURCES = misc/audioscrobbler.c
 libaudioscrobbler_plugin_la_LIBADD = $(SOCKET_LIBS)
 misc_LTLIBRARIES += libaudioscrobbler_plugin.la
 
+liblistenbrainz_plugin_la_SOURCES = misc/listenbrainz.c
+liblistenbrainz_plugin_la_LIBADD = $(SOCKET_LIBS)
+misc_LTLIBRARIES += liblistenbrainz_plugin.la
+
 libexport_plugin_la_SOURCES = \
 	misc/playlist/html.c \
 	misc/playlist/m3u.c \
