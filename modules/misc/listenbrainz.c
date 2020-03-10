@@ -3,9 +3,9 @@
  * ListenBrainz Submit Listens API 1
  * https://api.listenbrainz.org/1/submit-listens
  *****************************************************************************
- * Author: Kartik Ohri <kartikohri13 at gmail dot com>
- *
  * Copyright (C) 2020 VLC authors and VideoLAN
+ *
+ * Author: Kartik Ohri <kartikohri13 at gmail dot com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -58,7 +58,7 @@ typedef struct VLC_VECTOR (listen_t) vlc_vector_listen_t;
 
 struct intf_sys_t
 {
-    vlc_vector_listen_t p_queue;
+    vlc_vector_listen_t queue;
 
     vlc_playlist_t *playlist;
     struct vlc_playlist_listener_id *playlist_listener;
@@ -69,15 +69,13 @@ struct intf_sys_t
     vlc_cond_t wait;                // song to submit event
     vlc_thread_t thread;            // thread to submit song
 
-    struct vlc_memstream payload, request;
-
     vlc_url_t p_submit_url;         // where to submit data
     char *psz_user_token;           // authentication token
 
     listen_t p_current_song;
     bool b_meta_read;               // check if song metadata is already read
 
-    int64_t i_played_time;
+    vlc_tick_t time_played;
 };
 
 static int Open (vlc_object_t *);
@@ -129,7 +127,7 @@ static void ReadMetaData (intf_thread_t *p_this)
     vlc_mutex_lock (&p_sys->lock);
 
     p_sys->b_meta_read = true;
-    time (&p_sys->p_current_song.date);
+    time(&p_sys->p_current_song.date);
 
 #define RETRIEVE_METADATA(a, b) do { \
         char *psz_data = input_item_Get##b(item); \
@@ -201,9 +199,9 @@ static void Enqueue (intf_thread_t *p_this)
     }
 
     if ( p_sys->p_current_song.i_length == 0 )
-        p_sys->p_current_song.i_length = p_sys->i_played_time;
+        p_sys->p_current_song.i_length = p_sys->time_played;
 
-    if ( !b_skip && p_sys->i_played_time < 30 )
+    if ( !b_skip && p_sys->time_played < 30 )
     {
         msg_Dbg (p_this, "Song not listened long enough, not submitting");
         b_skip = 1;
@@ -213,9 +211,7 @@ static void Enqueue (intf_thread_t *p_this)
     {
         msg_Dbg (p_this, "Song will be submitted.");
         listen_t p_copy_to_queue = CopySong (p_sys->p_current_song);
-        bool b_success = vlc_vector_push (&p_sys->p_queue, p_copy_to_queue);
-        if ( !b_success )
-            msg_Warn (p_this, "Error: Unable to enqueue song");
+        vlc_vector_push (&p_sys->queue, p_copy_to_queue);
     }
 
     vlc_cond_signal (&p_sys->wait);
@@ -245,14 +241,14 @@ static void PlayerStateChanged (vlc_player_t *player, enum vlc_player_state stat
         Enqueue (intf);
 }
 
-static void UpdateState (const struct vlc_player_timer_point *value, void *data)
+static void OnTimerUpdate (const struct vlc_player_timer_point *value, void *data)
 {
     intf_thread_t *intf = data;
     intf_sys_t *p_sys = intf->p_sys;
-    p_sys->i_played_time = SEC_FROM_VLC_TICK (value->ts - VLC_TICK_0);
+    p_sys->time_played = SEC_FROM_VLC_TICK (value->ts - VLC_TICK_0);
 }
 
-static void PlayingStopped (vlc_tick_t system_date, void *data){}
+static void OnTimerStopped (vlc_tick_t system_date, void *data){}
 
 static void PlaylistItemChanged (vlc_playlist_t *playlist, ssize_t index, void *data)
 {
@@ -274,13 +270,13 @@ static void PlaylistItemChanged (vlc_playlist_t *playlist, ssize_t index, void *
         return;
     }
 
-    p_sys->i_played_time = 0;
+    p_sys->time_played = 0;
 
     if ( input_item_IsPreparsed (item) )
         ReadMetaData (intf);
 }
 
-static int PreparePayload (intf_thread_t *p_this)
+static char* PreparePayload (intf_thread_t *p_this)
 {
     intf_sys_t *p_sys = p_this->p_sys;
     struct vlc_memstream payload;
@@ -288,14 +284,14 @@ static int PreparePayload (intf_thread_t *p_this)
 
     vlc_mutex_lock (&p_sys->lock);
 
-    if ( p_sys->p_queue.size == 1 )
+    if ( p_sys->queue.size == 1 )
         vlc_memstream_printf (&payload, "{\"listen_type\":\"single\",\"payload\":[");
     else
         vlc_memstream_printf (&payload, "{\"listen_type\":\"import\",\"payload\":[");
 
-    for ( int i_song = 0; i_song < (int) p_sys->p_queue.size; i_song++ )
+    for ( int i_song = 0; i_song < (int) p_sys->queue.size; i_song++ )
     {
-        listen_t *p_song = &p_sys->p_queue.data[i_song];
+        listen_t *p_song = &p_sys->queue.data[i_song];
 
         vlc_memstream_printf (&payload, "{\"listened_at\": %"PRIu64, (uint64_t) p_song->date);
         vlc_memstream_printf (&payload, ", \"track_metadata\": {\"artist_name\": \"%s\", ",
@@ -314,12 +310,15 @@ static int PreparePayload (intf_thread_t *p_this)
 
     int i_status = vlc_memstream_close (&payload);
     if ( !i_status )
-        p_sys->payload = payload;
-    msg_Dbg (p_this, "Payload: %s", payload.ptr);
-    return i_status;
+    {
+        msg_Dbg (p_this, "Payload: %s", payload.ptr);
+        return payload.ptr;
+    }
+    else
+        return NULL;
 }
 
-static int PrepareRequest (intf_thread_t *p_this)
+static char* PrepareRequest (intf_thread_t *p_this, char* payload)
 {
     intf_sys_t *p_sys = p_this->p_sys;
     struct vlc_memstream request;
@@ -333,22 +332,23 @@ static int PrepareRequest (intf_thread_t *p_this)
     vlc_memstream_puts (&request, "User-Agent: "PACKAGE"/"VERSION"\r\n");
     vlc_memstream_puts (&request, "Connection: close\r\n");
     vlc_memstream_puts (&request, "Accept-Encoding: identity\r\n");
-    vlc_memstream_printf (&request, "Content-Length: %zu\r\n", p_sys->payload.length);
+    vlc_memstream_printf (&request, "Content-Length: %zu\r\n", strlen(payload));
     vlc_memstream_puts (&request, "\r\n");
-    vlc_memstream_write (&request, p_sys->payload.ptr, p_sys->payload.length);
+    vlc_memstream_puts (&request, payload);
     vlc_memstream_puts (&request, "\r\n\r\n");
 
-    free (p_sys->payload.ptr);
+    free (payload);
 
     vlc_mutex_unlock (&p_sys->lock);
 
     int i_status = vlc_memstream_close (&request);
     if ( !i_status )
-        p_sys->request = request;
-    return i_status;
+        return request.ptr;
+    else
+        return NULL;
 }
 
-static int SendRequest (intf_thread_t *p_this)
+static int SendRequest (intf_thread_t *p_this, char* request)
 {
     uint8_t p_buffer[1024];
     int i_ret;
@@ -359,12 +359,12 @@ static int SendRequest (intf_thread_t *p_this)
 
     if ( sock == NULL )
     {
-        free (p_sys->request.ptr);
+        free (request);
         return 1;
     }
 
-    i_ret = vlc_tls_Write (sock, p_sys->request.ptr, p_sys->request.length);
-    free (p_sys->request.ptr);
+    i_ret = vlc_tls_Write (sock, request, strlen(request));
+    free (request);
 
     if ( i_ret == -1 )
     {
@@ -383,7 +383,7 @@ static int SendRequest (intf_thread_t *p_this)
     p_buffer[i_ret] = '\0';
     if ( strstr ((char *) p_buffer, "OK") )
     {
-        vlc_vector_clear (&p_sys->p_queue);
+        vlc_vector_clear (&p_sys->queue);
         msg_Dbg (p_this, "Submission successful!");
     }
     else
@@ -395,18 +395,10 @@ static int SendRequest (intf_thread_t *p_this)
     return 0;
 }
 
-static int Open (vlc_object_t *p_this)
-{
-    intf_thread_t *p_intf = (intf_thread_t *) p_this;
-    intf_sys_t *p_sys = calloc (1, sizeof (intf_sys_t));
-    bool b_fail = 0;
+static int Configure(intf_thread_t *p_intf){
     int i_ret;
     char *psz_submission_url, *psz_url;
-
-    if ( !p_sys )
-        return VLC_ENOMEM;
-
-    p_intf->p_sys = p_sys;
+    intf_sys_t *p_sys = p_intf->p_sys;
 
     p_sys->psz_user_token = var_InheritString (p_intf, "listenbrainz_user_token");
     if ( EMPTY_STR (p_sys->psz_user_token) )
@@ -417,7 +409,7 @@ static int Open (vlc_object_t *p_this)
                                   _ ("Please set a user token or disable the ListenBrainz plugin, and restart VLC.\n"
                                      " Visit https://listenbrainz.org/profile/ to get a user token."));
         free (p_sys);
-        return VLC_EGENERIC;
+        return 0;
     }
 
     psz_submission_url = var_InheritString (p_intf, "listenbrainz_submission_url");
@@ -425,22 +417,34 @@ static int Open (vlc_object_t *p_this)
     {
         i_ret = asprintf (&psz_url, "https://%s/1/submit-listens", psz_submission_url);
         free (psz_submission_url);
-        if ( i_ret == -1 )
-            b_fail = 1;
-        vlc_UrlParse (&p_sys->p_submit_url, psz_url);
-        free (psz_url);
+        if ( i_ret > 0 )
+        {
+            vlc_UrlParse (&p_sys->p_submit_url, psz_url);
+            free (psz_url);
+            free (p_sys);
+            return 1;
+        }
     }
-    else
-        b_fail = 1;
 
-    if ( b_fail )
-    {
-        vlc_dialog_display_error (p_intf,
+    vlc_dialog_display_error (p_intf,
                                   _ ("ListenBrainz API URL Invalid"), "%s",
                                   _ ("Please set a valid endpoint URL. The default value is api.listenbrainz.org ."));
-        free (p_sys);
+    free (p_sys);
+    return 0;
+}
+
+static int Open (vlc_object_t *p_this)
+{
+    intf_thread_t *p_intf = (intf_thread_t *) p_this;
+    intf_sys_t *p_sys = calloc (1, sizeof (intf_sys_t));
+
+    if ( !p_sys )
+        return VLC_ENOMEM;
+
+    p_intf->p_sys = p_sys;
+
+    if(! Configure (p_intf))
         return VLC_EGENERIC;
-    }
 
     static struct vlc_playlist_callbacks const playlist_cbs =
             {
@@ -452,8 +456,8 @@ static int Open (vlc_object_t *p_this)
             };
     static struct vlc_player_timer_cbs const timer_cbs =
             {
-                    .on_update = UpdateState,
-                    .on_discontinuity = PlayingStopped,
+                    .on_update = OnTimerUpdate,
+                    .on_discontinuity = OnTimerStopped,
             };
 
     vlc_playlist_t *playlist = p_sys->playlist = vlc_intf_GetMainPlaylist (p_intf);
@@ -464,31 +468,30 @@ static int Open (vlc_object_t *p_this)
     if ( !p_sys->playlist_listener )
     {
         vlc_playlist_Unlock (playlist);
-        b_fail = 1;
+        goto error;
     }
-    else
-    {
-        p_sys->player_listener = vlc_player_AddListener (player, &player_cbs, p_intf);
-        vlc_playlist_Unlock (playlist);
-        if ( !p_sys->player_listener )
-            b_fail = 1;
-        else
-        {
-            p_sys->timer_listener = vlc_player_AddTimer (player, VLC_TICK_FROM_SEC (1), &timer_cbs, p_intf);
-            if ( !p_sys->timer_listener )
-                b_fail = 1;
-        }
-    }
-    if ( !b_fail )
-    {
-        vlc_mutex_init (&p_sys->lock);
-        vlc_cond_init (&p_sys->wait);
 
-        if ( vlc_clone (&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW) )
-            b_fail = 1;
-    }
-    if ( b_fail )
-    {
+    p_sys->player_listener = vlc_player_AddListener (player, &player_cbs, p_intf);
+    vlc_playlist_Unlock (playlist);
+    if ( !p_sys->player_listener )
+        goto error;
+
+    p_sys->timer_listener = vlc_player_AddTimer (player, VLC_TICK_FROM_SEC (1), &timer_cbs, p_intf);
+    if ( !p_sys->timer_listener )
+        goto error;
+
+
+
+    vlc_mutex_init (&p_sys->lock);
+    vlc_cond_init (&p_sys->wait);
+
+    if ( vlc_clone (&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW) )
+        goto error;
+
+
+    return VLC_SUCCESS;
+
+    error:
         if ( p_sys->playlist_listener )
         {
             vlc_playlist_Lock (playlist);
@@ -501,9 +504,6 @@ static int Open (vlc_object_t *p_this)
         }
         free (p_sys);
         return VLC_EGENERIC;
-    }
-
-    return VLC_SUCCESS;
 }
 
 static void Close (vlc_object_t *p_this)
@@ -515,7 +515,7 @@ static void Close (vlc_object_t *p_this)
     vlc_cancel (p_sys->thread);
     vlc_join (p_sys->thread, NULL);
 
-    vlc_vector_clear (&p_sys->p_queue);
+    vlc_vector_clear (&p_sys->queue);
     vlc_UrlClean (&p_sys->p_submit_url);
 
     vlc_playlist_Lock (playlist);
@@ -530,8 +530,8 @@ static void *Run (void *data)
 {
     intf_thread_t *p_intf = data;
     int canc = vlc_savecancel ();
-    int i_status;
     bool b_wait = 0;
+    char* request, *payload;
 
     intf_sys_t *p_sys = p_intf->p_sys;
 
@@ -545,28 +545,28 @@ static void *Run (void *data)
         vlc_mutex_lock (&p_sys->lock);
         mutex_cleanup_push (&p_sys->lock) ;
 
-                while ( p_sys->p_queue.size == 0 )
+                while ( p_sys->queue.size == 0 )
                     vlc_cond_wait (&p_sys->wait, &p_sys->lock);
 
         vlc_cleanup_pop ();
         vlc_mutex_unlock (&p_sys->lock);
         canc = vlc_savecancel ();
 
-        i_status = PreparePayload (p_intf);
-        if ( i_status )
+        payload = PreparePayload (p_intf);
+        if ( !payload )
         {
             msg_Warn (p_intf, "Error: Unable to generate payload");
             break;
         }
 
-        i_status = PrepareRequest (p_intf);
-        if ( i_status )
+        request = PrepareRequest (p_intf, payload);
+        if ( !request )
         {
             msg_Warn (p_intf, "Error: Unable to generate request body");
             break;
         }
 
-        i_status = SendRequest (p_intf);
+        int i_status = SendRequest (p_intf, request);
         if ( i_status )
         {
             msg_Warn (p_intf, "Error: Could not transmit request");
