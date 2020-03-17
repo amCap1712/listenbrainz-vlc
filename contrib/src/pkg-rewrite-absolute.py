@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import os, sys, argparse
+from collections import OrderedDict
 
 class PkgConfigFile():
     """Representation of a pkg-config file (.pc)"""
 
-    pc_variables = {}
-    pc_variables_expanded = {}
+    pc_variables = OrderedDict()
+    pc_variables_expanded = OrderedDict()
 
-    pc_keywords = {}
+    pc_keywords = OrderedDict()
 
     def __init__(self, file):
         for line in file:
@@ -15,7 +16,7 @@ class PkgConfigFile():
 
     def parse_pc_line(self, line):
         for i, c in enumerate(line):
-            if c is '=':
+            if c == '=':
                 # This is a pkg-config variable line
                 key = line[:i].strip()
                 val = line[(i + 1):].strip()
@@ -26,7 +27,7 @@ class PkgConfigFile():
                 # Add expanded version of variable
                 self.pc_variables_expanded.update({ key : self.expand_pc_vars(val) })
                 break
-            elif c is ':':
+            elif c == ':':
                 # This is a pkg-config keyword line
                 key = line[:i].strip()
                 val = line[(i + 1):].strip()
@@ -124,7 +125,7 @@ def main():
     args.output = args.output or args.input
 
     # Read .pc from input file
-    input_file = sys.stdin if args.input is '-' else open(args.input, 'r')
+    input_file = sys.stdin if args.input == '-' else open(args.input, 'r')
     pc_file = PkgConfigFile(input_file)
     if input_file is not sys.stdin:
         input_file.close()
@@ -132,7 +133,7 @@ def main():
     rewrite_abs_to_rel(pc_file)
 
     # Write output
-    output_file = sys.stdout if args.output is '-' else open(args.output, 'w')
+    output_file = sys.stdout if args.output == '-' else open(args.output, 'w')
     pc_file.write(output_file)
     if output_file is not sys.stdout:
         output_file.close()

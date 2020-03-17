@@ -61,9 +61,6 @@
 #include "common.h"
 #include "builtin_shaders.h"
 #include "../../video_chroma/copy.h"
-#ifdef HAVE_GL
-#include "../opengl/interop.h"
-#endif
 
 #include <assert.h>
 
@@ -73,9 +70,6 @@
 static int  Open(vout_display_t *, const vout_display_cfg_t *,
                  video_format_t *, vlc_video_context *);
 static void Close(vout_display_t *);
-
-static int  GLConvOpen(vlc_object_t *);
-static void GLConvClose(vlc_object_t *);
 
 #define DESKTOP_LONGTEXT N_(\
     "The desktop mode allows you to display the video on the desktop.")
@@ -114,13 +108,6 @@ vlc_module_begin ()
 
     add_shortcut("direct3d9", "direct3d")
     set_callback_display(Open, 280)
-
-#ifdef HAVE_GL
-    add_submodule()
-    set_description("DX OpenGL surface converter for D3D9")
-    set_capability("glinterop", 1)
-    set_callbacks(GLConvOpen, GLConvClose)
-#endif
 vlc_module_end ()
 
 /*****************************************************************************
@@ -366,6 +353,15 @@ static int Direct3D9ImportPicture(vout_display_t *vd,
         inputStream.Enable = TRUE;
         inputStream.pInputSurface = source;
         hr = IDXVAHD_VideoProcessor_VideoProcessBltHD( sys->processor.proc, destination, 0, 1, &inputStream );
+        if (FAILED(hr)) {
+            D3DSURFACE_DESC srcDesc, dstDesc;
+            IDirect3DSurface9_GetDesc(source, &srcDesc);
+            IDirect3DSurface9_GetDesc(destination, &dstDesc);
+
+            msg_Dbg(vd, "Failed VideoProcessBltHD src:%4.4s (%d) dst:%4.4s (%d) (hr=0x%lX)",
+                    (const char*)&srcDesc.Format, srcDesc.Format,
+                    (const char*)&dstDesc.Format, dstDesc.Format, hr);
+        }
     }
     else
     {
@@ -400,13 +396,14 @@ static int Direct3D9ImportPicture(vout_display_t *vd,
         hr = IDirect3DDevice9_StretchRect(sys->d3d9_device->d3ddev.dev, source, &source_visible_rect,
                                         destination, &texture_visible_rect,
                                         D3DTEXF_NONE);
+        if (FAILED(hr)) {
+            msg_Dbg(vd, "Failed StretchRect: source 0x%p. (hr=0x%lX)",
+                    (LPVOID)source, hr);
+        }
     }
     IDirect3DSurface9_Release(destination);
-    if (FAILED(hr)) {
-        msg_Dbg(vd, "Failed StretchRect: source 0x%p 0x%lX",
-                (LPVOID)source, hr);
+    if (FAILED(hr))
         return VLC_EGENERIC;
-    }
 
     /* */
     region->texture = sys->sceneTexture;
@@ -1326,15 +1323,6 @@ static int Direct3D9CheckConversion(vout_display_t *vd, D3DFORMAT src)
     hr = IDirect3D9_CheckDeviceFormat(d3dobj, sys->d3d9_device->d3ddev.adapterId,
                                       D3DDEVTYPE_HAL, dst, 0,
                                       D3DRTYPE_SURFACE, src);
-    if (SUCCEEDED(hr)) {
-        /* test whether device can perform color-conversion
-        ** from that format to target format
-        */
-        hr = IDirect3D9_CheckDeviceFormatConversion(d3dobj,
-                                                    sys->d3d9_device->d3ddev.adapterId,
-                                                    D3DDEVTYPE_HAL,
-                                                    src, dst);
-    }
     if (!SUCCEEDED(hr)) {
         if (D3DERR_NOTAVAILABLE != hr)
             msg_Err(vd, "Could not query adapter supported formats. (hr=0x%lX)", hr);
@@ -1350,7 +1338,11 @@ static const d3d9_format_t d3d_formats[] = {
     { "YV12",       MAKEFOURCC('Y','V','1','2'),    VLC_CODEC_J420,  0,0,0 },
     { "NV12",       MAKEFOURCC('N','V','1','2'),    VLC_CODEC_NV12,  0,0,0 },
     { "DXA9",       MAKEFOURCC('N','V','1','2'),    VLC_CODEC_D3D9_OPAQUE,  0,0,0 },
-    { "DXA9_10",    MAKEFOURCC('P','0','1','0'),    VLC_CODEC_D3D9_OPAQUE_10B,  0,0,0 },
+    { "DXA9_422",   MAKEFOURCC('Y','U','Y','2'),    VLC_CODEC_D3D9_OPAQUE,  0,0,0 },
+    { "DXA9_444",   MAKEFOURCC('A','Y','U','V'),    VLC_CODEC_D3D9_OPAQUE,  0,0,0 },
+    { "DXA9_10",    MAKEFOURCC('P','0','1','0'),    VLC_CODEC_D3D9_OPAQUE_10B, 0,0,0 },
+    { "DXA9_10_422", MAKEFOURCC('Y','2','1','0'),   VLC_CODEC_D3D9_OPAQUE_10B, 0,0,0 },
+    { "DXA9_10_444", MAKEFOURCC('Y','4','1','0'),   VLC_CODEC_D3D9_OPAQUE_10B, 0,0,0 },
     { "UYVY",       D3DFMT_UYVY,    VLC_CODEC_UYVY,  0,0,0 },
     { "YUY2",       D3DFMT_YUY2,    VLC_CODEC_YUYV,  0,0,0 },
     { "X8R8G8B8",   D3DFMT_X8R8G8B8,VLC_CODEC_RGB32, 0xff0000, 0x00ff00, 0x0000ff },
@@ -1377,7 +1369,7 @@ static const d3d9_format_t *FindBufferFormat(vout_display_t *vd, D3DFORMAT fmt)
 
 /**
  * It returns the format (closest to chroma) that can be converted to target */
-static const d3d9_format_t *Direct3DFindFormat(vout_display_t *vd, const video_format_t *fmt)
+static const d3d9_format_t *Direct3DFindFormat(vout_display_t *vd, const video_format_t *fmt, vlc_video_context *vctx)
 {
     vout_display_sys_t *sys = vd->sys;
     bool hardware_scale_ok = !(fmt->i_visible_width & 1) && !(fmt->i_visible_height & 1);
@@ -1387,9 +1379,16 @@ static const d3d9_format_t *Direct3DFindFormat(vout_display_t *vd, const video_f
     for (unsigned pass = 0; pass < 2; pass++) {
         const vlc_fourcc_t *list;
         const vlc_fourcc_t dxva_chroma[] = {fmt->i_chroma, 0};
+        D3DFORMAT decoder_format = D3DFMT_UNKNOWN;
 
         if (pass == 0 && is_d3d9_opaque(fmt->i_chroma))
+        {
+            d3d9_video_context_t *vctx_sys = GetD3D9ContextPrivate(vctx);
+            assert(vctx_sys != NULL);
             list = dxva_chroma;
+            decoder_format = vctx_sys->format;
+            msg_Dbg(vd, "favor decoder format: %4.4s (%d)", (const char*)&decoder_format, decoder_format);
+        }
         else if (pass == 0 && hardware_scale_ok && sys->allow_hw_yuv && vlc_fourcc_IsYUV(fmt->i_chroma))
             list = vlc_fourcc_GetYUVFallback(fmt->i_chroma);
         else if (pass == 1)
@@ -1403,14 +1402,12 @@ static const d3d9_format_t *Direct3DFindFormat(vout_display_t *vd, const video_f
 
                 if (format->fourcc != list[i])
                     continue;
+                if (decoder_format != D3DFMT_UNKNOWN && format->format != decoder_format)
+                    continue; // not the Hardware format we prefer
 
-                msg_Warn(vd, "trying surface pixel format: %s",
-                         format->name);
-                if (!Direct3D9CheckConversion(vd, format->format)) {
-                    msg_Dbg(vd, "selected surface pixel format is %s",
-                            format->name);
+                msg_Dbg(vd, "trying surface pixel format: %s", format->name);
+                if (!Direct3D9CheckConversion(vd, format->format))
                     return format;
-                }
             }
         }
     }
@@ -1476,8 +1473,11 @@ static int InitRangeProcessor(vout_display_t *vd, const d3d9_format_t *d3dfmt,
     HRESULT hr;
 
     sys->processor.dll = LoadLibrary(TEXT("DXVA2.DLL"));
-    if (!sys->processor.dll)
+    if (unlikely(!sys->processor.dll))
+    {
+        msg_Err(vd, "Failed to load DXVA2.DLL");
         return VLC_EGENERIC;
+    }
 
     D3DFORMAT *formatsList = NULL;
     DXVAHD_VPCAPS *capsList = NULL;
@@ -1522,7 +1522,10 @@ static int InitRangeProcessor(vout_display_t *vd, const d3d9_format_t *d3dfmt,
 
     formatsList = malloc(devcaps.InputFormatCount * sizeof(*formatsList));
     if (unlikely(formatsList == NULL))
+    {
+        msg_Dbg(vd, "Failed to allocate %u input formats", devcaps.InputFormatCount);
         goto error;
+    }
 
     hr = IDXVAHD_Device_GetVideoProcessorInputFormats( hd_device, devcaps.InputFormatCount, formatsList);
     UINT i;
@@ -1540,7 +1543,10 @@ static int InitRangeProcessor(vout_display_t *vd, const d3d9_format_t *d3dfmt,
     free(formatsList);
     formatsList = malloc(devcaps.OutputFormatCount * sizeof(*formatsList));
     if (unlikely(formatsList == NULL))
+    {
+        msg_Dbg(vd, "Failed to allocate %u output formats", devcaps.OutputFormatCount);
         goto error;
+    }
 
     hr = IDXVAHD_Device_GetVideoProcessorOutputFormats( hd_device, devcaps.OutputFormatCount, formatsList);
     for (i=0; i<devcaps.OutputFormatCount; i++)
@@ -1550,13 +1556,16 @@ static int InitRangeProcessor(vout_display_t *vd, const d3d9_format_t *d3dfmt,
     }
     if (i == devcaps.OutputFormatCount)
     {
-        msg_Warn(vd, "Output format %s not supported for range conversion", d3dfmt->name);
+        msg_Warn(vd, "Output format %d not supported for range conversion", sys->BufferFormat);
         goto error;
     }
 
     capsList = malloc(devcaps.VideoProcessorCount * sizeof(*capsList));
     if (unlikely(capsList == NULL))
+    {
+        msg_Dbg(vd, "Failed to allocate %u video processors", devcaps.VideoProcessorCount);
         goto error;
+    }
     hr = IDXVAHD_Device_GetVideoProcessorCaps( hd_device, devcaps.VideoProcessorCount, capsList);
     if (FAILED(hr))
     {
@@ -1595,7 +1604,7 @@ error:
 /**
  * It creates a Direct3D9 device and the associated resources.
  */
-static int Direct3D9Open(vout_display_t *vd, video_format_t *fmt)
+static int Direct3D9Open(vout_display_t *vd, video_format_t *fmt, vlc_video_context *vctx)
 {
     vout_display_sys_t *sys = vd->sys;
 
@@ -1604,23 +1613,40 @@ static int Direct3D9Open(vout_display_t *vd, video_format_t *fmt)
         return VLC_EGENERIC;
 
     sys->BufferFormat = render_out.d3d9_format;
+    const d3d9_format_t *dst_format = FindBufferFormat(vd, sys->BufferFormat);
+    if (unlikely(!dst_format))
+        msg_Warn(vd, "Unknown back buffer format 0x%X", sys->BufferFormat);
 
     /* Find the appropriate D3DFORMAT for the render chroma, the format will be the closest to
      * the requested chroma which is usable by the hardware in an offscreen surface, as they
      * typically support more formats than textures */
-    const d3d9_format_t *d3dfmt = Direct3DFindFormat(vd, &vd->source);
+    const d3d9_format_t *d3dfmt = Direct3DFindFormat(vd, &vd->source, vctx);
     if (!d3dfmt) {
-        msg_Err(vd, "surface pixel format is not supported.");
+        msg_Err(vd, "unsupported source pixel format %4.4s", &vd->source.i_chroma);
         goto error;
     }
-    const d3d9_format_t *d3dbuffer = FindBufferFormat(vd, sys->BufferFormat);
-    if (!d3dbuffer)
-        msg_Warn(vd, "Unknown back buffer format 0x%X", sys->BufferFormat);
-    else if (vd->source.color_range != COLOR_RANGE_FULL && d3dbuffer->rmask && !d3dfmt->rmask &&
-             sys->d3d9_device->d3ddev.identifier.VendorId == GPU_MANUFACTURER_NVIDIA)
+    msg_Dbg(vd, "found input surface format %s", d3dfmt->name);
+
+    bool force_dxva_hd = false;
+    // test whether device can perform color-conversion from that format to target format
+    HRESULT hr = IDirect3D9_CheckDeviceFormatConversion(sys->d3d9_device->hd3d.obj,
+                                                sys->d3d9_device->d3ddev.adapterId,
+                                                D3DDEVTYPE_HAL,
+                                                d3dfmt->format, sys->BufferFormat);
+    if (FAILED(hr))
+    {
+        msg_Dbg(vd, "Unsupported conversion trying with DXVA-HD");
+        force_dxva_hd = true;
+    }
+
+    if (force_dxva_hd || (dst_format && vd->source.color_range != COLOR_RANGE_FULL && dst_format->rmask && !d3dfmt->rmask &&
+                          sys->d3d9_device->d3ddev.identifier.VendorId == GPU_MANUFACTURER_NVIDIA))
     {
         // NVIDIA bug, YUV to RGB internal conversion in StretchRect always converts from limited to limited range
-        InitRangeProcessor( vd, d3dfmt, &render_out );
+        msg_Dbg(vd, "init DXVA-HD processor from %s to %s", d3dfmt->name, dst_format?dst_format->name:"unknown");
+        int err = InitRangeProcessor( vd, d3dfmt, &render_out );
+        if (err != VLC_SUCCESS)
+            goto error;
     }
 
     /* */
@@ -1834,7 +1860,7 @@ static int Open(vout_display_t *vd, const vout_display_cfg_t *cfg,
 
     /* */
     video_format_t fmt;
-    if (Direct3D9Open(vd, &fmt)) {
+    if (Direct3D9Open(vd, &fmt, context)) {
         msg_Err(vd, "Direct3D9 could not be opened");
         goto error;
     }
@@ -1881,215 +1907,3 @@ static void Close(vout_display_t *vd)
 
     free(vd->sys);
 }
-
-#if defined(HAVE_GL) && defined(HAVE_GL_WGLEW_H)
-#include "../opengl/renderer.h"
-#include <GL/glew.h>
-#include <GL/wglew.h>
-
-struct wgl_vt {
-    PFNWGLDXSETRESOURCESHAREHANDLENVPROC DXSetResourceShareHandleNV;
-    PFNWGLDXOPENDEVICENVPROC             DXOpenDeviceNV;
-    PFNWGLDXCLOSEDEVICENVPROC            DXCloseDeviceNV;
-    PFNWGLDXREGISTEROBJECTNVPROC         DXRegisterObjectNV;
-    PFNWGLDXUNREGISTEROBJECTNVPROC       DXUnregisterObjectNV;
-    PFNWGLDXLOCKOBJECTSNVPROC            DXLockObjectsNV;
-    PFNWGLDXUNLOCKOBJECTSNVPROC          DXUnlockObjectsNV;
-};
-struct glpriv
-{
-    struct wgl_vt vt;
-    HANDLE gl_handle_d3d;
-    HANDLE gl_render;
-    IDirect3DSurface9 *dx_render;
-};
-
-static int
-GLConvUpdate(const struct vlc_gl_interop *interop, GLuint *textures,
-             const GLsizei *tex_width, const GLsizei *tex_height,
-             picture_t *pic, const size_t *plane_offset)
-{
-    VLC_UNUSED(textures); VLC_UNUSED(tex_width); VLC_UNUSED(tex_height); VLC_UNUSED(plane_offset);
-    struct glpriv *priv = interop->priv;
-    HRESULT hr;
-
-    picture_sys_d3d9_t *picsys = ActiveD3D9PictureSys(pic);
-    if (unlikely(!picsys || !priv->gl_render))
-        return VLC_EGENERIC;
-
-    if (!priv->vt.DXUnlockObjectsNV(priv->gl_handle_d3d, 1, &priv->gl_render))
-    {
-        msg_Warn(interop->gl, "DXUnlockObjectsNV failed");
-        return VLC_EGENERIC;
-    }
-
-    d3d9_decoder_device_t *d3d9_decoder = GetD3D9OpaqueContext(interop->vctx);
-
-    const RECT rect = {
-        .left = 0,
-        .top = 0,
-        .right = pic->format.i_visible_width,
-        .bottom = pic->format.i_visible_height
-    };
-    hr = IDirect3DDevice9Ex_StretchRect(d3d9_decoder->d3ddev.devex, picsys->surface,
-                                        &rect, priv->dx_render, NULL, D3DTEXF_NONE);
-    if (FAILED(hr))
-    {
-        msg_Warn(interop->gl, "IDirect3DDevice9Ex_StretchRect failed. (0x%lX)", hr);
-        return VLC_EGENERIC;
-    }
-
-    if (!priv->vt.DXLockObjectsNV(priv->gl_handle_d3d, 1, &priv->gl_render))
-    {
-        msg_Warn(interop->gl, "DXLockObjectsNV failed");
-        priv->vt.DXUnregisterObjectNV(priv->gl_handle_d3d, priv->gl_render);
-        priv->gl_render = NULL;
-        return VLC_EGENERIC;
-    }
-
-    return VLC_SUCCESS;
-}
-
-static int
-GLConvAllocateTextures(const struct vlc_gl_interop *interop, GLuint *textures,
-                       const GLsizei *tex_width, const GLsizei *tex_height)
-{
-    VLC_UNUSED(tex_width); VLC_UNUSED(tex_height);
-    struct glpriv *priv = interop->priv;
-
-    priv->gl_render =
-        priv->vt.DXRegisterObjectNV(priv->gl_handle_d3d, priv->dx_render,
-                                    textures[0], GL_TEXTURE_2D, WGL_ACCESS_WRITE_DISCARD_NV);
-    if (!priv->gl_render)
-    {
-        msg_Warn(interop->gl, "DXRegisterObjectNV failed: %lu", GetLastError());
-        return VLC_EGENERIC;
-    }
-
-    if (!priv->vt.DXLockObjectsNV(priv->gl_handle_d3d, 1, &priv->gl_render))
-    {
-        msg_Warn(interop->gl, "DXLockObjectsNV failed");
-        priv->vt.DXUnregisterObjectNV(priv->gl_handle_d3d, priv->gl_render);
-        priv->gl_render = NULL;
-        return VLC_EGENERIC;
-    }
-
-    return VLC_SUCCESS;
-}
-
-static void
-GLConvClose(vlc_object_t *obj)
-{
-    struct vlc_gl_interop *interop = (void *)obj;
-    struct glpriv *priv = interop->priv;
-
-    if (priv->gl_handle_d3d)
-    {
-        if (priv->gl_render)
-        {
-            priv->vt.DXUnlockObjectsNV(priv->gl_handle_d3d, 1, &priv->gl_render);
-            priv->vt.DXUnregisterObjectNV(priv->gl_handle_d3d, priv->gl_render);
-        }
-
-        priv->vt.DXCloseDeviceNV(priv->gl_handle_d3d);
-    }
-
-    if (priv->dx_render)
-        IDirect3DSurface9_Release(priv->dx_render);
-
-    free(priv);
-}
-
-static int
-GLConvOpen(vlc_object_t *obj)
-{
-    struct vlc_gl_interop *interop = (void *) obj;
-
-    if (interop->fmt.i_chroma != VLC_CODEC_D3D9_OPAQUE
-     && interop->fmt.i_chroma != VLC_CODEC_D3D9_OPAQUE_10B)
-        return VLC_EGENERIC;
-
-    d3d9_video_context_t *vctx_sys = GetD3D9ContextPrivate( interop->vctx );
-    d3d9_decoder_device_t *d3d9_decoder = GetD3D9OpaqueContext(interop->vctx);
-    if ( vctx_sys == NULL || d3d9_decoder == NULL )
-        return VLC_EGENERIC;
-
-    if (interop->gl->ext != VLC_GL_EXT_WGL || !interop->gl->wgl.getExtensionsString)
-        return VLC_EGENERIC;
-
-    const char *wglExt = interop->gl->wgl.getExtensionsString(interop->gl);
-
-    if (wglExt == NULL || !vlc_gl_StrHasToken(wglExt, "WGL_NV_DX_interop"))
-        return VLC_EGENERIC;
-
-    struct wgl_vt vt;
-#define LOAD_EXT(name, type) do { \
-    vt.name = (type) vlc_gl_GetProcAddress(interop->gl, "wgl" #name); \
-    if (!vt.name) { \
-        msg_Warn(obj, "'wgl " #name "' could not be loaded"); \
-        return VLC_EGENERIC; \
-    } \
-} while(0)
-
-    LOAD_EXT(DXSetResourceShareHandleNV, PFNWGLDXSETRESOURCESHAREHANDLENVPROC);
-    LOAD_EXT(DXOpenDeviceNV, PFNWGLDXOPENDEVICENVPROC);
-    LOAD_EXT(DXCloseDeviceNV, PFNWGLDXCLOSEDEVICENVPROC);
-    LOAD_EXT(DXRegisterObjectNV, PFNWGLDXREGISTEROBJECTNVPROC);
-    LOAD_EXT(DXUnregisterObjectNV, PFNWGLDXUNREGISTEROBJECTNVPROC);
-    LOAD_EXT(DXLockObjectsNV, PFNWGLDXLOCKOBJECTSNVPROC);
-    LOAD_EXT(DXUnlockObjectsNV, PFNWGLDXUNLOCKOBJECTSNVPROC);
-
-    struct glpriv *priv = calloc(1, sizeof(struct glpriv));
-    if (!priv)
-        return VLC_ENOMEM;
-    interop->priv = priv;
-    priv->vt = vt;
-
-    if (!d3d9_decoder->hd3d.use_ex)
-    {
-        msg_Warn(obj, "DX/GL interrop only working on d3d9x");
-        goto error;
-    }
-
-    HRESULT hr;
-    HANDLE shared_handle = NULL;
-    hr = IDirect3DDevice9Ex_CreateRenderTarget(d3d9_decoder->d3ddev.devex,
-                                               interop->fmt.i_visible_width,
-                                               interop->fmt.i_visible_height,
-                                               D3DFMT_X8R8G8B8,
-                                               D3DMULTISAMPLE_NONE, 0, FALSE,
-                                               &priv->dx_render, &shared_handle);
-    if (FAILED(hr))
-    {
-        msg_Warn(obj, "IDirect3DDevice9Ex_CreateRenderTarget failed");
-        goto error;
-    }
-
-   if (shared_handle)
-        priv->vt.DXSetResourceShareHandleNV(priv->dx_render, shared_handle);
-
-    priv->gl_handle_d3d = priv->vt.DXOpenDeviceNV(d3d9_decoder->d3ddev.dev);
-    if (!priv->gl_handle_d3d)
-    {
-        msg_Warn(obj, "DXOpenDeviceNV failed: %lu", GetLastError());
-        goto error;
-    }
-
-    static const struct vlc_gl_interop_ops ops = {
-        .allocate_textures = GLConvAllocateTextures,
-        .update_textures = GLConvUpdate,
-    };
-    interop->ops = &ops;
-
-    int ret = opengl_interop_init(interop, GL_TEXTURE_2D, VLC_CODEC_RGB32,
-                                  COLOR_SPACE_UNDEF);
-    if (ret != VLC_SUCCESS)
-        goto error;
-
-    return VLC_SUCCESS;
-
-error:
-    GLConvClose(obj);
-    return VLC_EGENERIC;
-}
-#endif

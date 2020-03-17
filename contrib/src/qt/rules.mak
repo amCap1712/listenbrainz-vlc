@@ -1,7 +1,7 @@
 # Qt
 
 QT_VERSION_MAJOR := 5.12
-QT_VERSION := $(QT_VERSION_MAJOR).2
+QT_VERSION := $(QT_VERSION_MAJOR).7
 # Insert potential -betaX suffix here:
 QT_VERSION_FULL := $(QT_VERSION)
 QT_URL := https://download.qt.io/official_releases/qt/$(QT_VERSION_MAJOR)/$(QT_VERSION_FULL)/submodules/qtbase-everywhere-src-$(QT_VERSION_FULL).tar.xz
@@ -31,13 +31,13 @@ qt: qtbase-everywhere-src-$(QT_VERSION_FULL).tar.xz .sum-qt
 ifdef HAVE_WIN32
 	$(APPLY) $(SRC)/qt/0001-Windows-QPA-prefer-lower-value-when-rounding-fractio.patch
 	$(APPLY) $(SRC)/qt/0002-Windows-QPA-Disable-systray-notification-sounds.patch
-	$(APPLY) $(SRC)/qt/0004-Fix-PMurHash.c-mingw-clang-64-bit-compilation.patch
 ifndef HAVE_WIN64
 	$(APPLY) $(SRC)/qt/0001-disable-qt_random_cpu.patch
 endif
 	$(APPLY) $(SRC)/qt/0006-ANGLE-don-t-use-msvc-intrinsics-when-crosscompiling-.patch
 	$(APPLY) $(SRC)/qt/0007-ANGLE-remove-static-assert-that-can-t-be-evaluated-b.patch
 	$(APPLY) $(SRC)/qt/0008-ANGLE-disable-ANGLE_STD_ASYNC_WORKERS-when-compiling.patch
+	$(APPLY) $(SRC)/qt/fix-mingw-pkgconfig-file-and-dependency-naming.patch
 
 ifdef HAVE_CROSS_COMPILE
 	$(APPLY) $(SRC)/qt/0003-allow-cross-compilation-of-angle-with-wine.patch
@@ -48,9 +48,6 @@ else
 endif
 
 endif
-	$(APPLY) $(SRC)/qt/0001-qmake-Always-split-QMAKE_DEFAULT_LIBDIRS-using-with-.patch
-	$(APPLY) $(SRC)/qt/0001-generate-different-pkg-config-files-for-debug-and-re.patch
-	$(APPLY) $(SRC)/qt/0001-include-MODULE_AUX_INCLUDES-in-the-generated-.pc-fil.patch
 	$(MOVE)
 
 
@@ -82,11 +79,12 @@ endif
 
 endif
 
-QT_CONFIG := -static -opensource -confirm-license -no-pkg-config \
+QT_CONFIG := -static -no-shared -opensource -confirm-license -no-pkg-config \
 	-no-sql-sqlite -no-gif -qt-libjpeg -no-openssl $(QT_OPENGL) -no-dbus \
 	-no-vulkan -no-sql-odbc -no-pch \
 	-no-compile-examples -nomake examples -nomake tests -qt-zlib
 
+QT_CONFIG += -skip qtsql
 QT_CONFIG += -release
 
 ifeq ($(V),1)
@@ -112,8 +110,8 @@ ENV_VARS := $(HOSTVARS) DXSDK_DIR=$(PREFIX)/bin
 	cd $< && $(MAKE) -C src -C plugins sub-imageformats-install_subtargets sub-platforms-install_subtargets sub-styles-install_subtargets
 	$(SRC)/qt/AddStaticLink.sh "$(PREFIX)" Qt5Gui plugins/imageformats qjpeg
 ifdef HAVE_WIN32
-	# Add the private include to our project (similar to using "gui-private" in a qmake project)
-	sed -i.orig -e 's#-I$${includedir}/QtGui#-I$${includedir}/QtGui -I$${includedir}/QtGui/$(QT_VERSION)/QtGui#' $(PREFIX)/lib/pkgconfig/Qt5Gui.pc
+	# Add the private include to our project (similar to using "gui-private" in a qmake project) as well as ANGLE headers
+	sed -i.orig -e 's#-I$${includedir}/QtGui#-I$${includedir}/QtGui -I$${includedir}/QtGui/$(QT_VERSION)/QtGui -I$${includedir}/QtANGLE#' $(PREFIX)/lib/pkgconfig/Qt5Gui.pc
 	$(SRC)/qt/AddStaticLink.sh "$(PREFIX)" Qt5Gui plugins/platforms qwindows
 	# Vista styling
 	$(SRC)/qt/AddStaticLink.sh "$(PREFIX)" Qt5Widgets plugins/styles qwindowsvistastyle

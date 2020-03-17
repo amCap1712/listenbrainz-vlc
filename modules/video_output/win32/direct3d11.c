@@ -25,6 +25,11 @@
 # include "config.h"
 #endif
 
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0601 // _WIN32_WINNT_WIN7
+# undef _WIN32_WINNT
+# define _WIN32_WINNT 0x0601 // _WIN32_WINNT_WIN7
+#endif
+
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_vout_display.h>
@@ -37,11 +42,6 @@
 
 #include <assert.h>
 #include <math.h>
-
-#if !defined(_WIN32_WINNT) || _WIN32_WINNT < _WIN32_WINNT_WIN7
-# undef _WIN32_WINNT
-# define _WIN32_WINNT _WIN32_WINNT_WIN7
-#endif
 
 #define COBJMACROS
 #include <initguid.h>
@@ -736,7 +736,7 @@ static const d3d_format_t *GetDisplayFormatByDepth(vout_display_t *vd, uint8_t b
     if (from_processor)
         supportFlags |= D3D11_FORMAT_SUPPORT_VIDEO_PROCESSOR_OUTPUT;
     return FindD3D11Format( vd, vd->sys->d3d_dev, 0, rgb_yuv,
-                            bit_depth, widthDenominator, heightDenominator,
+                            bit_depth, widthDenominator+1, heightDenominator+1,
                             D3D11_CHROMA_CPU, supportFlags );
 }
 

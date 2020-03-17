@@ -20,13 +20,13 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-#if !defined(_WIN32_WINNT) || _WIN32_WINNT < _WIN32_WINNT_WIN7
-# undef _WIN32_WINNT
-# define _WIN32_WINNT _WIN32_WINNT_WIN7
-#endif
-
 #ifdef HAVE_CONFIG_H
 # include "config.h"
+#endif
+
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0601 // _WIN32_WINNT_WIN7
+# undef _WIN32_WINNT
+# define _WIN32_WINNT 0x0601 // _WIN32_WINNT_WIN7
 #endif
 
 #include <vlc_common.h>
@@ -204,6 +204,8 @@ bool IsRGBShader(const d3d_format_t *cfg)
            cfg->resourceFormat[0] != DXGI_FORMAT_R16_UNORM &&
            cfg->formatTexture != DXGI_FORMAT_YUY2 &&
            cfg->formatTexture != DXGI_FORMAT_AYUV &&
+           cfg->formatTexture != DXGI_FORMAT_Y210 &&
+           cfg->formatTexture != DXGI_FORMAT_Y410 &&
            cfg->formatTexture != DXGI_FORMAT_420_OPAQUE;
 }
 
@@ -376,12 +378,26 @@ HRESULT (D3D11_CompilePixelShader)(vlc_object_t *o, const d3d11_shaders_t *shade
                     "sample.z  = shaderTexture[0].Sample(samplerState, coords).a;\n"
                     "sample.a  = 1;";
             break;
+        case DXGI_FORMAT_Y210:
+            psz_sampler[0] =
+                    "sample.x  = shaderTexture[0].Sample(samplerState, coords).r;\n"
+                    "sample.y  = shaderTexture[0].Sample(samplerState, coords).g;\n"
+                    "sample.z  = shaderTexture[0].Sample(samplerState, coords).a;\n"
+                    "sample.a  = 1;";
+            break;
+        case DXGI_FORMAT_Y410:
+            psz_sampler[0] =
+                    "sample.x  = shaderTexture[0].Sample(samplerState, coords).g;\n"
+                    "sample.y  = shaderTexture[0].Sample(samplerState, coords).r;\n"
+                    "sample.z  = shaderTexture[0].Sample(samplerState, coords).b;\n"
+                    "sample.a  = 1;";
+            break;
         case DXGI_FORMAT_AYUV:
             psz_sampler[0] =
                     "sample.x  = shaderTexture[0].Sample(samplerState, coords).z;\n"
                     "sample.y  = shaderTexture[0].Sample(samplerState, coords).y;\n"
                     "sample.z  = shaderTexture[0].Sample(samplerState, coords).x;\n"
-                    "sample.a  = shaderTexture[0].Sample(samplerState, coords).a;";
+                    "sample.a  = 1;";
             break;
         case DXGI_FORMAT_R8G8B8A8_UNORM:
         case DXGI_FORMAT_B8G8R8A8_UNORM:
@@ -734,6 +750,7 @@ void D3D11_ClearRenderTargets(d3d11_device_t *d3d_dev, const d3d_format_t *cfg,
     static const FLOAT blackRGBA[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     static const FLOAT blackYUY2[4] = {0.0f, 0.5f, 0.0f, 0.5f};
     static const FLOAT blackVUYA[4] = {0.5f, 0.5f, 0.0f, 1.0f};
+    static const FLOAT blackY210[4] = {0.0f, 0.5f, 0.5f, 0.0f};
 
     static_assert(D3D11_MAX_RENDER_TARGET >= 2, "we need at least 2 RenderTargetView for NV12/P010");
 
@@ -753,6 +770,12 @@ void D3D11_ClearRenderTargets(d3d11_device_t *d3d_dev, const d3d_format_t *cfg,
         break;
     case DXGI_FORMAT_YUY2:
         ID3D11DeviceContext_ClearRenderTargetView( d3d_dev->d3dcontext, targets[0], blackYUY2);
+        break;
+    case DXGI_FORMAT_Y410:
+        ID3D11DeviceContext_ClearRenderTargetView( d3d_dev->d3dcontext, targets[0], blackVUYA);
+        break;
+    case DXGI_FORMAT_Y210:
+        ID3D11DeviceContext_ClearRenderTargetView( d3d_dev->d3dcontext, targets[0], blackY210);
         break;
     case DXGI_FORMAT_AYUV:
         ID3D11DeviceContext_ClearRenderTargetView( d3d_dev->d3dcontext, targets[0], blackVUYA);

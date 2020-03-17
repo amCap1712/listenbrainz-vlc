@@ -24,13 +24,13 @@
 # include "config.h"
 #endif
 
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0601 // _WIN32_WINNT_WIN7
+# undef _WIN32_WINNT
+# define _WIN32_WINNT 0x0601 // _WIN32_WINNT_WIN7
+#endif
+
 #include <assert.h>
 #include <vlc_common.h>
-
-#if !defined(_WIN32_WINNT) || _WIN32_WINNT < _WIN32_WINNT_WIN7
-# undef _WIN32_WINNT
-# define _WIN32_WINNT _WIN32_WINNT_WIN7
-#endif
 
 #define COBJMACROS
 #include <d3d11.h>
@@ -906,7 +906,7 @@ int D3D11_SetupQuad(vlc_object_t *o, d3d11_device_t *d3d_dev, const video_format
                     const display_info_t *displayFormat, const RECT *output,
                     video_orientation_t orientation)
 {
-    const bool RGB_shader = IsRGBShader(quad->textureFormat);
+    const bool RGB_src_shader = IsRGBShader(quad->textureFormat);
 
     quad->shaderConstants.LuminanceScale = (float)displayFormat->luminance_peak / GetFormatLuminance(o, fmt);
 
@@ -925,7 +925,7 @@ int D3D11_SetupQuad(vlc_object_t *o, d3d11_device_t *d3d_dev, const video_format
 
     FLOAT itu_black_level = 0.f;
     FLOAT itu_achromacy   = 0.f;
-    if (!RGB_shader)
+    if (!RGB_src_shader)
     {
         switch (quad->textureFormat->bitsPerChannel)
         {
@@ -995,46 +995,45 @@ int D3D11_SetupQuad(vlc_object_t *o, d3d11_device_t *d3d_dev, const video_format
     memcpy(colorspace.WhitePoint, IDENTITY_4X4, sizeof(colorspace.WhitePoint));
 
     const FLOAT *ppColorspace;
-    if (!IsRGBShader(displayFormat->pixelFormat))
+    if (RGB_src_shader == IsRGBShader(displayFormat->pixelFormat))
     {
-        if (!RGB_shader)
-            ppColorspace = IDENTITY_4X4;
-        else
-        {
-            ppColorspace = COLORSPACE_FULL_RGBA_TO_BT601_YUV;
-            colorspace.WhitePoint[0*4 + 3] = -itu_black_level;
-            colorspace.WhitePoint[1*4 + 3] = itu_achromacy;
-            colorspace.WhitePoint[2*4 + 3] = itu_achromacy;
-        }
+        ppColorspace = IDENTITY_4X4;
+    }
+    else if (RGB_src_shader)
+    {
+        ppColorspace = COLORSPACE_FULL_RGBA_TO_BT601_YUV;
+        colorspace.WhitePoint[0*4 + 3] = -itu_black_level;
+        colorspace.WhitePoint[1*4 + 3] = itu_achromacy;
+        colorspace.WhitePoint[2*4 + 3] = itu_achromacy;
     }
     else
     {
-        if (RGB_shader)
-            ppColorspace = IDENTITY_4X4;
-        else {
-            switch (fmt->space){
-                case COLOR_SPACE_BT709:
+        switch (fmt->space){
+            case COLOR_SPACE_BT709:
+                ppColorspace = COLORSPACE_BT709_YUV_TO_FULL_RGBA;
+                break;
+            case COLOR_SPACE_BT2020:
+                ppColorspace = COLORSPACE_BT2020_YUV_TO_FULL_RGBA;
+                break;
+            case COLOR_SPACE_BT601:
+                ppColorspace = COLORSPACE_BT601_YUV_TO_FULL_RGBA;
+                break;
+            default:
+            case COLOR_SPACE_UNDEF:
+                if( fmt->i_height > 576 )
+                {
                     ppColorspace = COLORSPACE_BT709_YUV_TO_FULL_RGBA;
-                    break;
-                case COLOR_SPACE_BT2020:
-                    ppColorspace = COLORSPACE_BT2020_YUV_TO_FULL_RGBA;
-                    break;
-                case COLOR_SPACE_BT601:
+                }
+                else
+                {
                     ppColorspace = COLORSPACE_BT601_YUV_TO_FULL_RGBA;
-                    break;
-                default:
-                case COLOR_SPACE_UNDEF:
-                    if( fmt->i_height > 576 )
-                        ppColorspace = COLORSPACE_BT709_YUV_TO_FULL_RGBA;
-                    else
-                        ppColorspace = COLORSPACE_BT601_YUV_TO_FULL_RGBA;
-                    break;
-            }
-            /* all matrices work in studio range and output in full range */
-            colorspace.WhitePoint[0*4 + 3] = -itu_black_level;
-            colorspace.WhitePoint[1*4 + 3] = -itu_achromacy;
-            colorspace.WhitePoint[2*4 + 3] = -itu_achromacy;
+                }
+                break;
         }
+        /* all matrices work in studio range and output in full range */
+        colorspace.WhitePoint[0*4 + 3] = -itu_black_level;
+        colorspace.WhitePoint[1*4 + 3] = -itu_achromacy;
+        colorspace.WhitePoint[2*4 + 3] = -itu_achromacy;
     }
 
     memcpy(colorspace.Colorspace, ppColorspace, sizeof(colorspace.Colorspace));
@@ -1090,6 +1089,8 @@ void D3D11_UpdateViewport(d3d_quad_t *quad, const RECT *rect, const d3d_format_t
     case DXGI_FORMAT_R16G16B16A16_UNORM:
     case DXGI_FORMAT_YUY2:
     case DXGI_FORMAT_AYUV:
+    case DXGI_FORMAT_Y210:
+    case DXGI_FORMAT_Y410:
         if ( display->formatTexture == DXGI_FORMAT_NV12 ||
              display->formatTexture == DXGI_FORMAT_P010 )
         {
