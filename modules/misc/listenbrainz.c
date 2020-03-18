@@ -60,8 +60,7 @@ struct intf_sys_t
 {
     vlc_vector_listen_t queue;
 
-    vlc_playlist_t *playlist;
-    struct vlc_playlist_listener_id *playlist_listener;
+    vlc_player_t *player;
     struct vlc_player_listener_id *player_listener;
     struct vlc_player_timer_id *timer_listener;
 
@@ -116,52 +115,51 @@ static void DeleteSong (listen_t *p_song)
 
 static void ReadMetaData (intf_thread_t *p_this)
 {
-    bool b_skip = 0;
     intf_sys_t *p_sys = p_this->p_sys;
 
-    vlc_player_t *player = vlc_playlist_GetPlayer (p_sys->playlist);
-    input_item_t *item = vlc_player_GetCurrentMedia (player);
+    input_item_t *item = vlc_player_GetCurrentMedia (p_sys->player);
     if ( item == NULL )
         return;
 
+    //vlc_player_Lock(p_sys->player);
     vlc_mutex_lock (&p_sys->lock);
 
     p_sys->b_meta_read = true;
     time(&p_sys->p_current_song.date);
 
-#define RETRIEVE_METADATA(a, b) do { \
-        char *psz_data = input_item_Get##b(item); \
-        if (psz_data && *psz_data) \
-            a = vlc_uri_encode(psz_data); \
-        free(psz_data); \
+#define RETRIEVE_METADATA(a, b) do {                                    \
+        char *psz_data = input_item_Get##b(item);                       \
+        if (psz_data && *psz_data)                                      \
+            a = vlc_uri_encode(psz_data);                               \
+        else                                                            \
+            msg_Dbg (p_this, #b" missing.");                            \
+        free(psz_data);                                                 \
     } while (0)
 
     RETRIEVE_METADATA(p_sys->p_current_song.psz_artist, Artist);
     if ( !p_sys->p_current_song.psz_artist )
     {
-        msg_Dbg (p_this, "Artist missing.");
         DeleteSong (&p_sys->p_current_song);
-        b_skip = 1;
+        goto error;
     }
 
     RETRIEVE_METADATA(p_sys->p_current_song.psz_title, Title);
-    if ( b_skip || !p_sys->p_current_song.psz_title )
+    if ( !p_sys->p_current_song.psz_title )
     {
-        msg_Dbg (p_this, "Track name missing.");
         DeleteSong (&p_sys->p_current_song);
-        b_skip = 1;
+        goto error;
     }
 
-    if ( !b_skip )
-    {
-        RETRIEVE_METADATA(p_sys->p_current_song.psz_album, Album);
-        RETRIEVE_METADATA(p_sys->p_current_song.psz_musicbrainz_id, TrackID);
-        RETRIEVE_METADATA(p_sys->p_current_song.psz_track_number, TrackNum);
-        p_sys->p_current_song.i_length = SEC_FROM_VLC_TICK (input_item_GetDuration (item));
-        msg_Dbg (p_this, "Meta data registered");
-        vlc_cond_signal (&p_sys->wait);
-    }
+    RETRIEVE_METADATA(p_sys->p_current_song.psz_album, Album);
+    RETRIEVE_METADATA(p_sys->p_current_song.psz_musicbrainz_id, TrackID);
+    RETRIEVE_METADATA(p_sys->p_current_song.psz_track_number, TrackNum);
+    p_sys->p_current_song.i_length = SEC_FROM_VLC_TICK (input_item_GetDuration(item));
+    msg_Dbg (p_this, "Meta data registered");
+    vlc_cond_signal(&p_sys->wait);
+
+error:
     vlc_mutex_unlock (&p_sys->lock);
+   // vlc_player_Unlock(p_sys->player);
 
 #undef RETRIEVE_METADATA
 }
@@ -210,8 +208,7 @@ static void Enqueue (intf_thread_t *p_this)
     if ( !b_skip )
     {
         msg_Dbg (p_this, "Song will be submitted.");
-        listen_t p_copy_to_queue = CopySong (p_sys->p_current_song);
-        vlc_vector_push (&p_sys->queue, p_copy_to_queue);
+        vlc_vector_push (&p_sys->queue, p_sys->p_current_song);
     }
 
     vlc_cond_signal (&p_sys->wait);
@@ -226,10 +223,7 @@ static void PlayerStateChanged (vlc_player_t *player, enum vlc_player_state stat
     intf_sys_t *p_sys = intf->p_sys;
 
     if ( vlc_player_GetVideoTrackCount (player) )
-    {
-        msg_Dbg (intf, "Not an audio-only input, not submitting");
         return;
-    }
 
     if ( !p_sys->b_meta_read && state >= VLC_PLAYER_STATE_PLAYING )
     {
@@ -250,29 +244,19 @@ static void OnTimerUpdate (const struct vlc_player_timer_point *value, void *dat
 
 static void OnTimerStopped (vlc_tick_t system_date, void *data){}
 
-static void PlaylistItemChanged (vlc_playlist_t *playlist, ssize_t index, void *data)
-{
-    VLC_UNUSED (index);
-
+static void OnCurrentMediaChanged(vlc_player_t *player, input_item_t *new_media, void *data){
     intf_thread_t *intf = data;
-    if ( index > 0 )
-        Enqueue (intf);
+    Enqueue (intf);
 
     intf_sys_t *p_sys = intf->p_sys;
     p_sys->b_meta_read = false;
 
-    vlc_player_t *player = vlc_playlist_GetPlayer (playlist);
-    input_item_t *item = vlc_player_GetCurrentMedia (player);
-
-    if ( !item || vlc_player_GetVideoTrackCount (player) )
-    {
-        msg_Dbg (intf, "Invalid item or not an audio-only input.");
+    if ( !new_media || vlc_player_GetVideoTrackCount (player) )
         return;
-    }
 
     p_sys->time_played = 0;
 
-    if ( input_item_IsPreparsed (item) )
+    if ( input_item_IsPreparsed (new_media) )
         ReadMetaData (intf);
 }
 
@@ -281,8 +265,6 @@ static char* PreparePayload (intf_thread_t *p_this)
     intf_sys_t *p_sys = p_this->p_sys;
     struct vlc_memstream payload;
     vlc_memstream_open (&payload);
-
-    vlc_mutex_lock (&p_sys->lock);
 
     if ( p_sys->queue.size == 1 )
         vlc_memstream_printf (&payload, "{\"listen_type\":\"single\",\"payload\":[");
@@ -306,7 +288,6 @@ static char* PreparePayload (intf_thread_t *p_this)
     }
 
     vlc_memstream_printf (&payload, "]}");
-    vlc_mutex_unlock (&p_sys->lock);
 
     int i_status = vlc_memstream_close (&payload);
     if ( !i_status )
@@ -323,8 +304,6 @@ static char* PrepareRequest (intf_thread_t *p_this, char* payload)
     intf_sys_t *p_sys = p_this->p_sys;
     struct vlc_memstream request;
 
-    vlc_mutex_lock (&p_sys->lock);
-
     vlc_memstream_open (&request);
     vlc_memstream_printf (&request, "POST %s HTTP/1.1\r\n", p_sys->p_submit_url.psz_path);
     vlc_memstream_printf (&request, "Host: %s\r\n", p_sys->p_submit_url.psz_host);
@@ -338,8 +317,6 @@ static char* PrepareRequest (intf_thread_t *p_this, char* payload)
     vlc_memstream_puts (&request, "\r\n\r\n");
 
     free (payload);
-
-    vlc_mutex_unlock (&p_sys->lock);
 
     int i_status = vlc_memstream_close (&request);
     if ( !i_status )
@@ -429,7 +406,7 @@ static int Configure(intf_thread_t *p_intf){
     vlc_dialog_display_error (p_intf,
                                   _ ("ListenBrainz API URL Invalid"), "%s",
                                   _ ("Please set a valid endpoint URL. The default value is api.listenbrainz.org ."));
-    free (p_sys);
+   free (p_sys);
     return 0;
 }
 
@@ -446,13 +423,10 @@ static int Open (vlc_object_t *p_this)
     if(! Configure (p_intf))
         return VLC_EGENERIC;
 
-    static struct vlc_playlist_callbacks const playlist_cbs =
-            {
-                    .on_current_index_changed = PlaylistItemChanged,
-            };
     static struct vlc_player_cbs const player_cbs =
             {
                     .on_state_changed = PlayerStateChanged,
+                    .on_current_media_changed = OnCurrentMediaChanged,
             };
     static struct vlc_player_timer_cbs const timer_cbs =
             {
@@ -460,27 +434,18 @@ static int Open (vlc_object_t *p_this)
                     .on_discontinuity = OnTimerStopped,
             };
 
-    vlc_playlist_t *playlist = p_sys->playlist = vlc_intf_GetMainPlaylist (p_intf);
+    vlc_playlist_t *playlist = vlc_intf_GetMainPlaylist (p_intf);
     vlc_player_t *player = vlc_playlist_GetPlayer (playlist);
 
-    vlc_playlist_Lock (playlist);
-    p_sys->playlist_listener = vlc_playlist_AddListener (playlist, &playlist_cbs, p_intf, false);
-    if ( !p_sys->playlist_listener )
-    {
-        vlc_playlist_Unlock (playlist);
-        goto error;
-    }
-
+    vlc_player_Lock (player);
     p_sys->player_listener = vlc_player_AddListener (player, &player_cbs, p_intf);
-    vlc_playlist_Unlock (playlist);
+    vlc_player_Unlock (player);
     if ( !p_sys->player_listener )
         goto error;
 
-    p_sys->timer_listener = vlc_player_AddTimer (player, VLC_TICK_FROM_SEC (1), &timer_cbs, p_intf);
+    p_sys->timer_listener = vlc_player_AddTimer (p_sys->player, VLC_TICK_FROM_SEC (1), &timer_cbs, p_intf);
     if ( !p_sys->timer_listener )
         goto error;
-
-
 
     vlc_mutex_init (&p_sys->lock);
     vlc_cond_init (&p_sys->wait);
@@ -488,20 +453,13 @@ static int Open (vlc_object_t *p_this)
     if ( vlc_clone (&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW) )
         goto error;
 
-
     return VLC_SUCCESS;
 
     error:
-        if ( p_sys->playlist_listener )
-        {
-            vlc_playlist_Lock (playlist);
-            if ( p_sys->player_listener )
-                vlc_player_RemoveListener (player, p_sys->player_listener);
-            if ( p_sys->timer_listener )
-                vlc_player_RemoveTimer (player, p_sys->timer_listener);
-            vlc_playlist_RemoveListener (playlist, p_sys->playlist_listener);
-            vlc_playlist_Unlock (playlist);
-        }
+        if ( p_sys->player_listener )
+            vlc_player_RemoveListener (p_sys->player, p_sys->player_listener);
+        if ( p_sys->timer_listener )
+            vlc_player_RemoveTimer (p_sys->player, p_sys->timer_listener);
         free (p_sys);
         return VLC_EGENERIC;
 }
@@ -510,7 +468,6 @@ static void Close (vlc_object_t *p_this)
 {
     intf_thread_t *p_intf = (intf_thread_t *) p_this;
     intf_sys_t *p_sys = p_intf->p_sys;
-    vlc_playlist_t *playlist = p_sys->playlist;
 
     vlc_cancel (p_sys->thread);
     vlc_join (p_sys->thread, NULL);
@@ -518,10 +475,7 @@ static void Close (vlc_object_t *p_this)
     vlc_vector_clear (&p_sys->queue);
     vlc_UrlClean (&p_sys->p_submit_url);
 
-    vlc_playlist_Lock (playlist);
-    vlc_player_RemoveListener (vlc_playlist_GetPlayer (playlist), p_sys->player_listener);
-    vlc_playlist_RemoveListener (playlist, p_sys->playlist_listener);
-    vlc_playlist_Unlock (playlist);
+    vlc_player_RemoveListener (p_sys->player, p_sys->player_listener);
 
     free (p_sys);
 }
