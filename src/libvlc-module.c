@@ -1094,20 +1094,6 @@ static const char *const ppsz_prefres[] = {
     "You can select which VoD server module you want to use. Set this " \
     "to 'vod_rtsp' to switch back to the old, legacy module." )
 
-#define RT_PRIORITY_TEXT N_("Allow real-time priority")
-#define RT_PRIORITY_LONGTEXT N_( \
-    "Running VLC in real-time priority will allow for much more precise " \
-    "scheduling and yield better, especially when streaming content. " \
-    "It can however lock up your whole machine, or make it very very " \
-    "slow. You should only activate this if you know what you're " \
-    "doing.")
-
-#define RT_OFFSET_TEXT N_("Adjust VLC priority")
-#define RT_OFFSET_LONGTEXT N_( \
-    "This option adds an offset (positive or negative) to VLC default " \
-    "priorities. You can use it to tune VLC priority against other " \
-    "programs, or against other VLC instances.")
-
 #define USE_STREAM_IMMEDIATE_LONGTEXT N_( \
      "This option is useful if you want to lower the latency when " \
      "reading a stream")
@@ -1132,14 +1118,6 @@ static const char *const ppsz_prefres[] = {
 #define STATS_TEXT N_("Locally collect statistics")
 #define STATS_LONGTEXT N_( \
      "Collect miscellaneous local statistics about the playing media.")
-
-#define DAEMON_TEXT N_("Run as daemon process")
-#define DAEMON_LONGTEXT N_( \
-     "Runs VLC as a background daemon process.")
-
-#define PIDFILE_TEXT N_("Write process id to file")
-#define PIDFILE_LONGTEXT N_( \
-       "Writes process id into specified file.")
 
 #define ONEINSTANCE_TEXT N_("Allow only one running instance")
 #define ONEINSTANCE_LONGTEXT N_( \
@@ -2168,10 +2146,8 @@ vlc_module_begin ()
     set_section( N_("Performance options"), NULL )
 
 #if defined (LIBVLC_USE_PTHREAD)
-    add_bool( "rt-priority", false, RT_PRIORITY_TEXT,
-              RT_PRIORITY_LONGTEXT, true )
-    add_integer( "rt-offset", 0, RT_OFFSET_TEXT,
-                 RT_OFFSET_LONGTEXT, true )
+    add_obsolete_bool( "rt-priority" ) /* since 4.0.0 */
+    add_obsolete_integer( "rt-offset" ) /* since 4.0.0 */
 #endif
 
 #if defined(HAVE_DBUS)
@@ -2272,11 +2248,9 @@ vlc_module_begin ()
         change_volatile ()
     add_obsolete_string( "verbose-objects" ) /* since 2.1.0 */
 #if !defined(_WIN32) && !defined(__OS2__)
-    add_bool( "daemon", 0, DAEMON_TEXT, DAEMON_LONGTEXT, true )
+    add_obsolete_bool( "daemon" ) /* since 4.0.0 */
         change_short('d')
-
-    add_string( "pidfile", NULL, PIDFILE_TEXT, PIDFILE_LONGTEXT,
-                                       false )
+    add_obsolete_string( "pidfile" ) /* since 4.0.0 */
 #endif
 
 #if defined (_WIN32) || defined (__APPLE__)
@@ -2865,13 +2839,12 @@ vlc_module_begin ()
               BOOKMARK10_TEXT, BOOKMARK_LONGTEXT, false )
 
 #define HELP_TEXT \
-    N_("print help for VLC (can be combined with --advanced and " \
-       "--help-verbose)")
+    N_("print help for VLC (can be combined with --help-verbose)")
 #define FULL_HELP_TEXT \
     N_("Exhaustive help for VLC and its modules")
 #define LONGHELP_TEXT \
     N_("print help for VLC and all its modules (can be combined with " \
-       "--advanced and --help-verbose)")
+       "--help-verbose)")
 #define HELP_VERBOSE_TEXT \
     N_("ask for extra verbosity when displaying help")
 #define LIST_TEXT \
@@ -2879,8 +2852,8 @@ vlc_module_begin ()
 #define LIST_VERBOSE_TEXT \
     N_("print a list of available modules with extra detail")
 #define MODULE_TEXT \
-    N_("print help on a specific module (can be combined with --advanced " \
-       "and --help-verbose). Prefix the module name with = for strict " \
+    N_("print help on a specific module (can be combined with " \
+       "--help-verbose). Prefix the module name with = for strict " \
        "matches.")
 #define IGNORE_CONFIG_TEXT \
     N_("no configuration option will be loaded nor saved to config file")

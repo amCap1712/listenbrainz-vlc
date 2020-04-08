@@ -70,6 +70,30 @@ AC_C_INLINE
 AC_C_RESTRICT
 AX_CXX_COMPILE_STDCXX_14([noext], [mandatory])
 
+dnl Check the compiler supports atomics in C
+AC_MSG_CHECKING([C atomics])
+VLC_SAVE_FLAGS
+ATOMIC_LIB=""
+AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <stdatomic.h>],[
+ atomic_uintmax_t test;
+ atomic_init(&test, 0);
+ atomic_fetch_add_explicit(&test, 2u, memory_order_relaxed);
+])], [AC_MSG_RESULT([built-in])], [
+  LDFLAGS="$LDFLAGS -latomic"
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <stdatomic.h>],[
+atomic_uintmax_t test;
+atomic_init(&test, 0);
+atomic_fetch_add_explicit(&test, 2u, memory_order_relaxed);
+])],[
+    AC_MSG_RESULT([using -latomic])
+    ATOMIC_LIB="-latomic"
+  ],[
+  AC_MSG_ERROR([VLC requires atomics support])
+  ])
+])
+VLC_RESTORE_FLAGS
+AC_SUBST([ATOMIC_LIB])
+
 dnl Extend the --help string at the current spot.
 AC_DEFUN([EXTEND_HELP_STRING], [m4_divert_once([HELP_ENABLE], [$1])])
 
@@ -84,8 +108,16 @@ AS_IF([test -n "${with_binary_version}"],[
 ])
 
 dnl Prevent clang from accepting unknown flags with a mere warning
-AX_APPEND_COMPILE_FLAGS([-Werror=unknown-warning-option -Werror=invalid-command-line-argument], [CFLAGS])
-AX_APPEND_COMPILE_FLAGS([-Werror=unknown-warning-option -Werror=invalid-command-line-argument], [CXXFLAGS])
+AX_CHECK_COMPILE_FLAG([-Werror=invalid-command-line-argument], [
+  AX_APPEND_FLAG([-Werror=invalid-command-line-argument], [CFLAGS])
+  AX_APPEND_FLAG([-Werror=invalid-command-line-argument], [CXXFLAGS])
+  AX_APPEND_FLAG([-Werror=invalid-command-line-argument], [OBJCFLAGS])
+])
+AX_CHECK_COMPILE_FLAG([-Werror=unknown-warning-option], [
+  AX_APPEND_FLAG([-Werror=unknown-warning-option], [CFLAGS])
+  AX_APPEND_FLAG([-Werror=unknown-warning-option], [CXXFLAGS])
+  AX_APPEND_FLAG([-Werror=unknown-warning-option], [OBJCFLAGS])
+])
 
 dnl
 dnl  Check the operating system
@@ -139,29 +171,21 @@ case "${host_os}" in
     SYS=dragonfly
     ;;
   darwin*)
-    dnl Workaround possible Xcode 11 bug
-    CFLAGS="${CFLAGS} -fno-stack-check"
-    CXXFLAGS="${CXXFLAGS} -fno-stack-check"
-    OBJCFLAGS="${OBJCFLAGS} -fno-stack-check"
+    SYS=darwin
 
-    dnl Force gcc "-arch" flag
-    ARCH_flag=""
+    dnl Work around an Xcode 11 bug, fixed in Xcode 11.3.1
+    AX_APPEND_FLAG([-fno-stack-check], [CFLAGS])
+    AX_APPEND_FLAG([-fno-stack-check], [CXXFLAGS])
+    AX_APPEND_FLAG([-fno-stack-check], [OBJCFLAGS])
+
     case "${host_cpu}" in
       i?86)
-        ARCH_flag="-arch i386"
         X86ASMFLAGS="-f macho32"
-        X86ASMDEFS="${X86ASMDEFS} -DPREFIX"
-      ;;
-      ppc64*)
-        ARCH_flag="-arch ppc64"
-      ;;
-      ppc*)
-        ARCH_flag="-arch ppc"
+        AX_APPEND_FLAG([-DPREFIX], [X86ASMDEFS])
       ;;
       x86_64)
-        ARCH_flag="-arch x86_64"
         X86ASMFLAGS="-f macho64"
-        X86ASMDEFS="${X86ASMDEFS} -DPREFIX"
+        AX_APPEND_FLAG([-DPREFIX], [X86ASMDEFS])
       ;;
       arm*)
         ac_cv_c_bigendian="no"
@@ -169,13 +193,11 @@ case "${host_os}" in
       ;;
     esac
 
-    SYS=darwin
-    CFLAGS="${CFLAGS} -D_INTL_REDIRECT_MACROS -std=gnu11 ${ARCH_flag}"
-    CXX="${CXX} -stdlib=libc++ -std=c++11"
-    CXXFLAGS="${CXXFLAGS} -D_INTL_REDIRECT_MACROS ${ARCH_flag}"
-    CPPFLAGS="${CPPFLAGS} ${ARCH_flag}"
-    OBJCFLAGS="${OBJCFLAGS} -D_INTL_REDIRECT_MACROS -std=gnu11 ${ARCH_flag} -Werror=partial-availability"
-    LDFLAGS="${LDFLAGS} -Wl,-headerpad_max_install_names ${ARCH_flag}"
+    AX_APPEND_FLAG([-D_INTL_REDIRECT_MACROS], [CPPFLAGS])
+    AX_APPEND_FLAG([-stdlib=libc++], [CXXFLAGS])
+    AX_APPEND_FLAG([-Werror=partial-availability], [OBJCFLAGS])
+    AX_APPEND_FLAG([-Wl,-headerpad_max_install_names], [LDFLAGS])
+
     VLC_ADD_LIBS([libvlc vlc],[-Wl,-undefined,dynamic_lookup,-framework,AppKit])
     VLC_ADD_LIBS([libvlccore],[-Wl,-framework,CoreFoundation,-framework,CoreServices])
 
@@ -195,7 +217,6 @@ case "${host_os}" in
              [HAVE_TVOS="1"
              HAVE_IOS="0"
              HAVE_OSX="0"
-             ac_cv_func_daemon=no
              ac_cv_func_fork=no
              ],)
 
@@ -233,12 +254,17 @@ case "${host_os}" in
     AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
       [[#ifdef _WIN32_WINNT
        # error _WIN32_WINNT already defined
+       #else
+       # include <windows.h>
+       # if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0601
+       #  error _WIN32_WINNT toolchain default high enough
+       # endif
        #endif
       ]],[[;]])
     ],[
-      AC_DEFINE([_WIN32_WINNT], 0x0601, [Define to '0x0601' for Windows 7 APIs.])
+      AC_DEFINE([_WIN32_WINNT], [0x0601], [Define to '0x0601' for Windows 7 APIs.])
     ])
-    AC_DEFINE([_WIN32_IE], 0x0600, [Define to '0x0600' for IE 6.0 (and shell) APIs.])
+    AC_DEFINE([_WIN32_IE], [0x0600], [Define to '0x0600' for IE 6.0 (and shell) APIs.])
     AC_DEFINE([UNICODE], [1], [Define to 1 for Unicode (Wide Chars) APIs.])
     AC_DEFINE([_ISOC99_SOURCE], [1], [Extensions to ISO C89 from ISO C99.])
     AC_DEFINE([_ISOC11_SOURCE], [1], [Extensions to ISO C99 from ISO C11.])
@@ -648,7 +674,7 @@ dnl Check for system libs needed
 need_libc=false
 
 dnl Check for usual libc functions
-AC_CHECK_FUNCS([accept4 daemon fcntl flock fstatat fstatvfs fork getmntent_r getenv getpwuid_r isatty memalign mkostemp mmap open_memstream newlocale pipe2 pread posix_fadvise posix_madvise setlocale stricmp strnicmp strptime uselocale])
+AC_CHECK_FUNCS([accept4 fcntl flock fstatat fstatvfs fork getmntent_r getenv getpwuid_r isatty memalign mkostemp mmap open_memstream newlocale pipe2 pread posix_fadvise posix_madvise setlocale stricmp strnicmp strptime uselocale])
 AC_REPLACE_FUNCS([aligned_alloc atof atoll dirfd fdopendir flockfile fsync getdelim getpid lfind lldiv memrchr nrand48 poll posix_memalign recvmsg rewind sendmsg setenv strcasecmp strcasestr strdup strlcpy strndup strnlen strnstr strsep strtof strtok_r strtoll swab tdestroy tfind timegm timespec_get strverscmp pathconf])
 AC_REPLACE_FUNCS([gettimeofday])
 AC_CHECK_FUNC(fdatasync,,
@@ -760,8 +786,21 @@ ac_cv_type_socklen_t,
 #endif]], [[socklen_t len; len = 0;]])],
 ac_cv_type_socklen_t=yes,
 ac_cv_type_socklen_t=no)])
-AS_IF([test "$ac_cv_type_socklen_t" = no],
- [AC_DEFINE(socklen_t, unsigned int)])
+AS_IF([test "$ac_cv_type_socklen_t" = no], [
+  AC_COMPILE_IFELSE([
+    AC_LANG_PROGRAM([[
+#include <sys/types.h>
+#ifdef _WIN32
+# include <winsock2.h>
+# include <ws2tcpip.h>
+#else
+# include <sys/socket.h>
+#endif
+    ]], [[
+_Generic(getpeername, int (*)(int, struct sockaddr *, int *): 0);
+    ]])
+  ], AC_DEFINE(socklen_t, int), AC_DEFINE(socklen_t, unsigned int))
+])
 
 dnl Check for struct sockaddr_storage
 AH_TEMPLATE(sockaddr_storage, [Define to `sockaddr' if <sys/socket.h> does not define.]) dnl ` (fix VIM syntax highlight
@@ -890,6 +929,10 @@ AS_IF([test "${SYS}" != "mingw32"], [
   ])
 ])
 AC_SUBST([LIBRT])
+
+dnl  Check for clock_* functions, needs to be done here,
+dnl  after the -lrt check
+AC_REPLACE_FUNCS([clock_gettime clock_nanosleep clock_getres])
 
 dnl
 dnl Check for headers
@@ -4241,7 +4284,7 @@ PKG_ENABLE_MODULES_VLC([UPNP], [upnp], [libupnp], [Intel UPNP SDK],[auto])
 dnl
 dnl mDNS using libmicrodns
 dnl
-PKG_ENABLE_MODULES_VLC([MICRODNS], [], [microdns], [mDNS services discovery], [auto])
+PKG_ENABLE_MODULES_VLC([MICRODNS], [], [microdns >= 0.1.2], [mDNS services discovery], [auto])
 
 
 EXTEND_HELP_STRING([Misc options:])

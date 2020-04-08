@@ -226,36 +226,21 @@ int main(int i_argc, const char *ppsz_argv[])
     argv[argc++] = "--no-ignore-config";
     argv[argc++] = "--media-library";
 
-    /* overwrite system language on Mac */
-    char *lang = NULL;
+    /* Overwrite system language */
+    CFPropertyListRef lang_pref = CFPreferencesCopyAppValue(CFSTR("language"),
+        kCFPreferencesCurrentApplication);
 
-    for (int i = 0; i < i_argc; i++) {
-        if (!strncmp(ppsz_argv[i], "--language", 10)) {
-            lang = strstr(ppsz_argv[i], "=");
-            ppsz_argv++, i_argc--;
-            continue;
-        }
-    }
-    if (lang && strncmp( lang, "auto", 4 )) {
-        char tmp[11];
-        snprintf(tmp, 11, "LANG%s", lang);
-        putenv(tmp);
-    }
-
-    if (!lang) {
-        CFStringRef language;
-        language = (CFStringRef)CFPreferencesCopyAppValue(CFSTR("language"),
-                                                          kCFPreferencesCurrentApplication);
-        if (language) {
-            lang = FromCFString(language, kCFStringEncodingUTF8);
-            if (strncmp( lang, "auto", 4 )) {
+    if (lang_pref) {
+        if (CFGetTypeID(lang_pref) == CFStringGetTypeID()) {
+            char *lang = FromCFString(lang_pref, kCFStringEncodingUTF8);
+            if (strncmp(lang, "auto", 4)) {
                 char tmp[11];
                 snprintf(tmp, 11, "LANG=%s", lang);
                 putenv(tmp);
             }
             free(lang);
-            CFRelease(language);
         }
+        CFRelease(lang_pref);
     }
 
     ppsz_argv++; i_argc--; /* skip executable path */

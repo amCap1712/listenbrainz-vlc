@@ -338,6 +338,13 @@ AbstractStream::buffering_status AbstractStream::doBufferize(vlc_tick_t nz_deadl
         return AbstractStream::buffering_suspended;
     }
 
+    /* Reached end of live playlist */
+    if(!segmentTracker->bufferingAvailable())
+    {
+        vlc_mutex_unlock(&lock);
+        return AbstractStream::buffering_suspended;
+    }
+
     if(!demuxer)
     {
         format = segmentTracker->getCurrentFormat();
@@ -463,7 +470,10 @@ AbstractStream::status AbstractStream::dequeue(vlc_tick_t nz_deadline, vlc_tick_
 std::string AbstractStream::getContentType()
 {
     if (currentChunk == NULL && !eof)
-        currentChunk = segmentTracker->getNextChunk(!fakeEsOut()->restarting(), connManager);
+    {
+        const bool b_restarting = fakeEsOut()->restarting();
+        currentChunk = segmentTracker->getNextChunk(!b_restarting, connManager);
+    }
     if(currentChunk)
         return currentChunk->getContentType();
     else
@@ -473,7 +483,10 @@ std::string AbstractStream::getContentType()
 block_t * AbstractStream::readNextBlock()
 {
     if (currentChunk == NULL && !eof)
-        currentChunk = segmentTracker->getNextChunk(!fakeEsOut()->restarting(), connManager);
+    {
+        const bool b_restarting = fakeEsOut()->restarting();
+        currentChunk = segmentTracker->getNextChunk(!b_restarting, connManager);
+    }
 
     if(discontinuity && demuxfirstchunk)
     {
@@ -561,8 +574,9 @@ bool AbstractStream::setPosition(vlc_tick_t time, bool tryonly)
         }
         else fakeEsOut()->commandsQueue()->Abort( true );
 
-        es_out_Control(p_realdemux->out, ES_OUT_SET_NEXT_DISPLAY_TIME,
-                       VLC_TICK_0 + time);
+// in some cases, media time seek != sent dts
+//        es_out_Control(p_realdemux->out, ES_OUT_SET_NEXT_DISPLAY_TIME,
+//                       VLC_TICK_0 + time);
     }
     return ret;
 }

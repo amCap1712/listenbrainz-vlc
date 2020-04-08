@@ -25,6 +25,8 @@
 #include <vlc_codec.h>
 #include <vlc_opengl.h>
 #include <vlc_plugin.h>
+
+#include "gl_api.h"
 #include "gl_common.h"
 #include "interop.h"
 
@@ -43,8 +45,9 @@ struct vlc_gl_renderer
     /* libplacebo context, created by the caller (optional) */
     struct pl_context *pl_ctx;
 
-    /* Function pointers to OpenGL functions, set by the caller */
-    const opengl_vtable_t *vt;
+    /* Set by the caller */
+    const struct vlc_gl_api *api;
+    const opengl_vtable_t *vt; /* for convenience, same as &api->vt */
 
     /* True to dump shaders, set by the caller */
     bool b_dump_shaders;
@@ -60,8 +63,11 @@ struct vlc_gl_renderer
     struct {
         GLfloat OrientationMatrix[16];
         GLfloat ProjectionMatrix[16];
+        GLfloat StereoMatrix[3*3];
         GLfloat ZoomMatrix[16];
         GLfloat ViewMatrix[16];
+
+        GLfloat TexCoordsMap[PICTURE_PLANE_MAX][3*3];
     } var;
 
     struct {
@@ -73,13 +79,16 @@ struct vlc_gl_renderer
 
         GLint TransformMatrix;
         GLint OrientationMatrix;
+        GLint StereoMatrix;
         GLint ProjectionMatrix;
         GLint ViewMatrix;
         GLint ZoomMatrix;
+
+        GLint TexCoordsMap[PICTURE_PLANE_MAX];
     } uloc;
 
     struct {
-        GLint MultiTexCoord[3];
+        GLint PicCoordsIn;
         GLint VertexPosition;
     } aloc;
 
@@ -101,7 +110,7 @@ struct vlc_gl_renderer
     unsigned nb_indices;
     GLuint vertex_buffer_object;
     GLuint index_buffer_object;
-    GLuint texture_buffer_object[PICTURE_PLANE_MAX];
+    GLuint texture_buffer_object;
 
     struct {
         unsigned int i_x_offset;
@@ -152,17 +161,15 @@ struct vlc_gl_renderer
  * Create a new renderer
  *
  * \param gl the GL context
- * \param vt the OpenGL functions vtable
+ * \param api the OpenGL API
  * \param context the video context
  * \param fmt the video format
- * \param supports_npot indicate if the implementation supports non-power-of-2
- *                      texture size
  * \param dump_shaders indicate if the shaders must be dumped in logs
  */
 struct vlc_gl_renderer *
-vlc_gl_renderer_New(vlc_gl_t *gl, const opengl_vtable_t *vt,
+vlc_gl_renderer_New(vlc_gl_t *gl, const struct vlc_gl_api *api,
                     vlc_video_context *context, const video_format_t *fmt,
-                    bool supports_npot, bool dump_shaders);
+                    bool dump_shaders);
 
 /**
  * Delete a renderer
@@ -190,8 +197,7 @@ vlc_gl_renderer_Prepare(struct vlc_gl_renderer *renderer, picture_t *picture);
  * \param sr the renderer
  */
 int
-vlc_gl_renderer_Draw(struct vlc_gl_renderer *renderer,
-                     const video_format_t *source);
+vlc_gl_renderer_Draw(struct vlc_gl_renderer *renderer);
 
 int
 vlc_gl_renderer_SetViewpoint(struct vlc_gl_renderer *renderer,

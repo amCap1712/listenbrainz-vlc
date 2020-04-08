@@ -19,8 +19,10 @@
  *****************************************************************************/
 
 #ifndef VLC_VDPAU_H
-# include <stdint.h>
-# include <vdpau/vdpau.h>
+#define VLC_VDPAU_H
+
+#include <stdint.h>
+#include <vdpau/vdpau.h>
 #include <vlc_codec.h>
 
 typedef struct vdp_s vdp_t;

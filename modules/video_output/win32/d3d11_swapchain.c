@@ -33,11 +33,12 @@
 
 #include <assert.h>
 
-#include <windows.h>
-#if !defined(_WIN32_WINNT) || _WIN32_WINNT < _WIN32_WINNT_WIN7
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0601 // _WIN32_WINNT_WIN7
 # undef _WIN32_WINNT
-# define _WIN32_WINNT _WIN32_WINNT_WIN7
+# define _WIN32_WINNT 0x0601 // _WIN32_WINNT_WIN7
 #endif
+
+#include <windows.h>
 
 #define COBJMACROS
 #include <initguid.h>
@@ -79,6 +80,8 @@ struct d3d11_local_swapchain
 #endif /* !VLC_WINSTORE_APP */
     IDXGISwapChain1        *dxgiswapChain;   /* DXGI 1.2 swap chain */
     IDXGISwapChain4        *dxgiswapChain4;  /* DXGI 1.5 for HDR metadata */
+    bool                    send_metadata;
+    DXGI_HDR_METADATA_HDR10 hdr10;
 
     ID3D11RenderTargetView *swapchainTargetView[D3D11_MAX_RENDER_TARGET];
 
@@ -232,6 +235,9 @@ static void SelectSwapchainColorspace(struct d3d11_local_swapchain *display, con
         msg_Err(display->obj, "Failed to set colorspace %s. (hr=0x%lX)", color_spaces[best].name, hr);
 done:
     display->colorspace = &color_spaces[best];
+    display->send_metadata = color_spaces[best].transfer == (video_transfer_func_t) cfg->transfer &&
+                             color_spaces[best].primaries == (video_color_primaries_t) cfg->primaries &&
+                             color_spaces[best].color == (video_color_space_t) cfg->colorspace;
     if (dxgiswapChain3)
         IDXGISwapChain3_Release(dxgiswapChain3);
 }
@@ -347,11 +353,11 @@ static bool UpdateSwapchain( struct d3d11_local_swapchain *display, const libvlc
 
     const d3d_format_t *newPixelFormat = NULL;
 #if VLC_WINSTORE_APP
-    display->dxgiswapChain = var_InheritInteger(display->obj, "winrt-swapchain");
+    display->dxgiswapChain = (void*)(uintptr_t)var_InheritInteger(display->obj, "winrt-swapchain");
     if (display->dxgiswapChain != NULL)
     {
         DXGI_SWAP_CHAIN_DESC1 scd;
-        if (SUCCEEDED(IDXGISwapChain1_GetDesc(display->dxgiswapChain, &scd)))
+        if (SUCCEEDED(IDXGISwapChain1_GetDesc1(display->dxgiswapChain, &scd)))
         {
             for (const d3d_format_t *output_format = GetRenderFormatList();
                  output_format->name != NULL; ++output_format)
@@ -480,32 +486,31 @@ bool LocalSwapchainUpdateOutput( void *opaque, const libvlc_video_render_cfg_t *
     return true;
 }
 
+bool LocalSwapchainWinstoreSize( void *opaque, uint32_t *width, uint32_t *height )
+{
+#if VLC_WINSTORE_APP
+    struct d3d11_local_swapchain *display = opaque;
+    /* legacy UWP mode, the width/height was set in GUID_SWAPCHAIN_WIDTH/HEIGHT */
+    UINT dataSize = sizeof(*width);
+    HRESULT hr = IDXGISwapChain_GetPrivateData(display->dxgiswapChain, &GUID_SWAPCHAIN_WIDTH, &dataSize, width);
+    if (SUCCEEDED(hr)) {
+        dataSize = sizeof(*height);
+        hr = IDXGISwapChain_GetPrivateData(display->dxgiswapChain, &GUID_SWAPCHAIN_HEIGHT, &dataSize, height);
+        return SUCCEEDED(hr);
+    }
+#else
+    VLC_UNUSED(opaque); VLC_UNUSED(width); VLC_UNUSED(height);
+#endif
+    return false;
+}
+
 bool LocalSwapchainStartEndRendering( void *opaque, bool enter )
 {
     struct d3d11_local_swapchain *display = opaque;
 
     if ( enter )
-    {
-#if VLC_WINSTORE_APP
-        /* legacy UWP mode, the width/height was set in GUID_SWAPCHAIN_WIDTH/HEIGHT */
-        uint32_t i_width;
-        uint32_t i_height;
-        UINT dataSize = sizeof(i_width);
-        HRESULT hr = IDXGISwapChain_GetPrivateData(display->dxgiswapChain, &GUID_SWAPCHAIN_WIDTH, &dataSize, &i_width);
-        if (SUCCEEDED(hr)) {
-            dataSize = sizeof(i_height);
-            hr = IDXGISwapChain_GetPrivateData(display->dxgiswapChain, &GUID_SWAPCHAIN_HEIGHT, &dataSize, &i_height);
-            if (SUCCEEDED(hr)) {
-                if (i_width != sys->area.vdcfg.display.width || i_height != sys->area.vdcfg.display.height)
-                {
-                    vout_display_SetSize(vd, i_width, i_height);
-                }
-            }
-        }
-#endif
-
         D3D11_ClearRenderTargets( display->d3d_dev, display->pixelFormat, display->swapchainTargetView );
-    }
+
     return true;
 }
 
@@ -514,7 +519,8 @@ void LocalSwapchainSetMetadata( void *opaque, libvlc_video_metadata_type_t type,
     struct d3d11_local_swapchain *display = opaque;
 
     assert(type == libvlc_video_metadata_frame_hdr10);
-    if (type == libvlc_video_metadata_frame_hdr10 && metadata && display->dxgiswapChain4)
+    if ( type == libvlc_video_metadata_frame_hdr10 && metadata &&
+         display->send_metadata && display->dxgiswapChain4 )
     {
         const libvlc_video_frame_hdr10_metadata_t *p_hdr10 = metadata;
         DXGI_HDR_METADATA_HDR10 hdr10 = { 0 };
@@ -530,7 +536,12 @@ void LocalSwapchainSetMetadata( void *opaque, libvlc_video_metadata_type_t type,
         hdr10.MaxMasteringLuminance = p_hdr10->MaxMasteringLuminance;
         hdr10.MaxContentLightLevel = p_hdr10->MaxContentLightLevel;
         hdr10.MaxFrameAverageLightLevel = p_hdr10->MaxFrameAverageLightLevel;
-        IDXGISwapChain4_SetHDRMetaData( display->dxgiswapChain4, DXGI_HDR_METADATA_TYPE_HDR10, sizeof( hdr10 ), &hdr10 );
+        if (memcmp(&display->hdr10, &hdr10, sizeof(hdr10)))
+        {
+            memcpy(&display->hdr10, &hdr10, sizeof(hdr10));
+            IDXGISwapChain4_SetHDRMetaData( display->dxgiswapChain4, DXGI_HDR_METADATA_TYPE_HDR10,
+                                            sizeof( &display->hdr10 ), &display->hdr10 );
+        }
     }
 }
 
@@ -553,7 +564,9 @@ void *CreateLocalSwapchainHandle(vlc_object_t *o, HWND hwnd, d3d11_device_t *d3d
     display->obj = o;
 #if !VLC_WINSTORE_APP
     display->swapchainHwnd = hwnd;
-#endif /* !VLC_WINSTORE_APP */
+#else // VLC_WINSTORE_APP
+    VLC_UNUSED(hwnd);
+#endif // VLC_WINSTORE_APP
     display->d3d_dev = d3d_dev;
 
     return display;

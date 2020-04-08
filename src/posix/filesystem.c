@@ -51,6 +51,9 @@ static inline void vlc_cloexec(int fd)
     fcntl(fd, F_SETFD, FD_CLOEXEC | fcntl(fd, F_GETFD));
 }
 #endif
+#if !defined(MSG_NOSIGNAL) && defined(SO_NOSIGPIPE)
+# define MSG_NOSIGNAL 0
+#endif
 
 int vlc_open (const char *filename, int flags, ...)
 {
@@ -314,4 +317,31 @@ int vlc_accept (int lfd, struct sockaddr *addr, socklen_t *alen, bool nonblock)
         vlc_socket_setup(fd, nonblock);
 #endif
     return fd;
+}
+
+ssize_t vlc_send(int fd, const void *buf, size_t len, int flags)
+{
+    return vlc_sendto(fd, buf, len, flags, NULL, 0);
+}
+
+ssize_t vlc_sendto(int fd, const void *buf, size_t len, int flags,
+                   const struct sockaddr *dst, socklen_t dstlen)
+{
+    struct iovec iov = {
+        .iov_base = (void *)buf,
+        .iov_len = len,
+    };
+    struct msghdr msg = {
+        .msg_name = (struct sockaddr *)dst,
+        .msg_namelen = dstlen,
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    };
+
+    return vlc_sendmsg(fd, &msg, flags);
+}
+
+ssize_t vlc_sendmsg(int fd, const struct msghdr *msg, int flags)
+{
+    return sendmsg(fd, msg, flags | MSG_NOSIGNAL);
 }

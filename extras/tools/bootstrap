@@ -133,7 +133,7 @@ check automake 1.15
 check m4 1.4.16
 check libtool 2.4
 check pkg-config
-check cmake 3.16.0
+check cmake 3.17.0
 check yasm
 check_tar
 check ragel
@@ -143,7 +143,7 @@ check ant
 check xz
 check bison 3.0.0
 check flex
-check_nasm 2.13.02
+check_nasm 2.14
 check gettext
 check help2man
 check meson 0.51.1

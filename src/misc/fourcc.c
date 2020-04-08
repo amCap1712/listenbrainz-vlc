@@ -72,23 +72,20 @@ static vlc_fourcc_t Lookup(vlc_fourcc_t fourcc, const char **restrict dsc,
 
 static vlc_fourcc_t LookupVideo(vlc_fourcc_t fourcc, const char **restrict dsc)
 {
-    return Lookup(fourcc, dsc, mapping_video,
-                  sizeof (mapping_video) / sizeof (mapping_video[0]),
-                  desc_video, sizeof (desc_video) / sizeof (desc_video[0]));
+    return Lookup(fourcc, dsc, mapping_video, ARRAY_SIZE(mapping_video),
+                  desc_video, ARRAY_SIZE(desc_video));
 }
 
 static vlc_fourcc_t LookupAudio(vlc_fourcc_t fourcc, const char **restrict dsc)
 {
-    return Lookup(fourcc, dsc, mapping_audio,
-                  sizeof (mapping_audio) / sizeof (mapping_audio[0]),
-                  desc_audio, sizeof (desc_audio) / sizeof (desc_audio[0]));
+    return Lookup(fourcc, dsc, mapping_audio, ARRAY_SIZE(mapping_audio),
+                  desc_audio, ARRAY_SIZE(desc_audio));
 }
 
 static vlc_fourcc_t LookupSpu(vlc_fourcc_t fourcc, const char **restrict dsc)
 {
-    return Lookup(fourcc, dsc, mapping_spu,
-                  sizeof (mapping_spu) / sizeof (mapping_spu[0]),
-                  desc_spu, sizeof (desc_spu) / sizeof (desc_spu[0]));
+    return Lookup(fourcc, dsc, mapping_spu, ARRAY_SIZE(mapping_spu),
+                  desc_spu, ARRAY_SIZE(desc_spu));
 }
 
 static vlc_fourcc_t LookupCat(vlc_fourcc_t fourcc, const char **restrict dsc,
@@ -785,6 +782,7 @@ static const struct
     { { VLC_CODEC_YUVA_444_10L,
         VLC_CODEC_YUVA_444_10B },              PLANAR_16(4, 1, 1, 10) },
     { { VLC_CODEC_P010 },                      SEMIPLANAR(2, 2, 2, 10) },
+    { { VLC_CODEC_P016 },                      SEMIPLANAR(2, 2, 2, 16) },
 
     { { VLC_CODEC_YUYV, VLC_CODEC_YVYU,
         VLC_CODEC_UYVY, VLC_CODEC_VYUY },      PACKED_FMT(2, 16) },

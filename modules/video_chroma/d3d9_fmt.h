@@ -31,6 +31,9 @@
 
 #include "dxgi_fmt.h"
 
+#define DXVAHD_TEXT N_("Use DXVA-HD for color conversion")
+#define DXVAHD_LONGTEXT N_("Use DXVA-HD for color conversion")
+
 /* owned by the vout for VLC_CODEC_D3D9_OPAQUE */
 typedef struct
 {
@@ -91,7 +94,7 @@ static inline bool is_d3d9_opaque(vlc_fourcc_t chroma)
     }
 }
 
-const struct vlc_video_context_operations d3d9_vctx_ops;
+extern const struct vlc_video_context_operations d3d9_vctx_ops;
 
 picture_sys_d3d9_t *ActiveD3D9PictureSys(picture_t *);
 

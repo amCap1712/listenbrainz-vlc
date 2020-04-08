@@ -98,6 +98,10 @@ static const d3d9_format_t d3d_formats[] = {
     { "NV12",   MAKEFOURCC('N','V','1','2'),    VLC_CODEC_NV12 },
     //{ "IMC3",   MAKEFOURCC('I','M','C','3'),    VLC_CODEC_YV12 },
     { "P010",   MAKEFOURCC('P','0','1','0'),    VLC_CODEC_P010 },
+    { "AYUV",   MAKEFOURCC('A','Y','U','V'),    VLC_CODEC_YUVA },
+    { "YUY2",   MAKEFOURCC('Y','U','Y','2'),    VLC_CODEC_YUYV },
+    { "Y410",   MAKEFOURCC('Y','4','1','0'),    VLC_CODEC_Y410 },
+    { "Y210",   MAKEFOURCC('Y','2','1','0'),    VLC_CODEC_Y210 },
 
     { NULL, 0, 0 }
 };
@@ -178,6 +182,7 @@ static picture_context_t *dxva2_pic_context_copy(picture_context_t *ctx)
     if (unlikely(pic_ctx==NULL))
         return NULL;
     *pic_ctx = *src_ctx;
+    pic_ctx->dxva2_dll = LoadLibrary(TEXT("DXVA2.DLL"));
     vlc_video_context_Hold(pic_ctx->ctx.s.vctx);
     va_surface_AddRef(pic_ctx->va_surface);
     AcquireD3D9PictureSys(&pic_ctx->ctx.picsys);
@@ -280,11 +285,6 @@ static int Open(vlc_va_t *va, AVCodecContext *ctx, enum PixelFormat hwfmt, const
 
     va->sys = sys;
 
-    if (desc->comp[0].depth > 8)
-        sys->render = MAKEFOURCC('P','0','1','0');
-    else
-        sys->render =  MAKEFOURCC('N','V','1','2');
-
     /* Load dll*/
     sys->dxva2_dll = LoadLibrary(TEXT("DXVA2.DLL"));
     if (!sys->dxva2_dll) {
@@ -320,7 +320,9 @@ static int Open(vlc_va_t *va, AVCodecContext *ctx, enum PixelFormat hwfmt, const
         goto error;
     }
 
-    if (sys->render == MAKEFOURCC('P','0','1','0'))
+    if (sys->render == MAKEFOURCC('P','0','1','0') ||
+        sys->render == MAKEFOURCC('Y','4','1','0') ||
+        sys->render == MAKEFOURCC('Y','2','1','0'))
         final_fmt.i_chroma = VLC_CODEC_D3D9_OPAQUE_10B;
     else
         final_fmt.i_chroma = VLC_CODEC_D3D9_OPAQUE;
@@ -469,6 +471,27 @@ static int DxSetupOutput(vlc_va_t *va, const directx_va_mode_t *mode, const vide
         }
     }
 
+    D3DFORMAT preferredOutput;
+    if (mode->bit_depth > 8)
+    {
+        if (mode->log2_chroma_w == 0 && mode->log2_chroma_h == 0)
+            preferredOutput = MAKEFOURCC('Y','4','1','0'); // 10 bits 4:4:4
+        else if (mode->log2_chroma_w == 1 && mode->log2_chroma_h == 0)
+            preferredOutput = MAKEFOURCC('Y','2','1','0'); // 10 bits 4:2:2
+        else
+        preferredOutput = MAKEFOURCC('P','0','1','0');
+    }
+    else if (mode->log2_chroma_w == 0 && mode->log2_chroma_h == 0)
+        preferredOutput = MAKEFOURCC('A','Y','U','V'); // 8 bits 4:4:4
+    else if (mode->log2_chroma_w == 1 && mode->log2_chroma_h == 0)
+        preferredOutput = MAKEFOURCC('Y','U','Y','2'); // 8 bits 4:2:2
+    else if (mode->bit_depth > 8)
+        preferredOutput = MAKEFOURCC('P','0','1','0');
+    else
+        preferredOutput =  MAKEFOURCC('N','V','1','2');
+    msg_Dbg(va, "favor decoder format %4.4s (for 4:%d:%d %d bits)", (const char*)&preferredOutput,
+            (2-mode->log2_chroma_w)*2, (2-mode->log2_chroma_w-mode->log2_chroma_h)*2, mode->bit_depth);
+
     /* */
     for (unsigned pass = 0; pass < 2 && err != VLC_SUCCESS; ++pass)
     {
@@ -482,7 +505,7 @@ static int DxSetupOutput(vlc_va_t *va, const directx_va_mode_t *mode, const vide
             }
             if (!is_supported)
                 continue;
-            if (pass == 0 && format->format != sys->render)
+            if (pass == 0 && format->format != preferredOutput)
                 continue;
 
             /* We have our solution */

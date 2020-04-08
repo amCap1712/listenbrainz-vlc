@@ -425,6 +425,10 @@ void vout_ChangeDisplaySize(vout_thread_t *vout,
 
     /* DO NOT call this outside the vout window callbacks */
     vlc_mutex_lock(&sys->display_lock);
+
+    sys->window_width = width;
+    sys->window_height = height;
+
     if (sys->display != NULL)
         vout_display_SetSize(sys->display, width, height);
     vlc_mutex_unlock(&sys->display_lock);
@@ -1359,7 +1363,6 @@ static int ThreadDisplayPicture(vout_thread_t *vout, vlc_tick_t *deadline)
 void vout_ChangePause(vout_thread_t *vout, bool is_paused, vlc_tick_t date)
 {
     assert(!vout->p->dummy);
-    assert(vout->p->display);
 
     vout_control_Hold(&vout->p->control);
     assert(!vout->p->pause.is_on || !is_paused);
@@ -1606,6 +1609,10 @@ static int vout_Start(vout_thread_t *vout, vlc_video_context *vctx, const vout_c
     vlc_mutex_lock(&sys->display_lock);
     vlc_mutex_unlock(&sys->window_lock);
 
+    /* Setup the window size, protected by the display_lock */
+    dcfg.window_props.width = sys->window_width;
+    dcfg.window_props.height = sys->window_height;
+
     sys->display = vout_OpenWrapper(vout, sys->splitter_name, &dcfg, vctx);
     if (sys->display == NULL) {
         vlc_mutex_unlock(&sys->display_lock);
@@ -1829,7 +1836,7 @@ void vout_Release(vout_thread_t *vout)
 {
     vout_thread_sys_t *sys = vout->p;
 
-    if (atomic_fetch_sub_explicit(&sys->refs, 1, memory_order_release))
+    if (!vlc_atomic_rc_dec(&sys->rc))
         return;
 
     if (sys->dummy)
@@ -1869,6 +1876,7 @@ static vout_thread_t *vout_CreateCommon(vlc_object_t *object)
     vout_CreateVars(vout);
 
     vout_thread_sys_t *sys = (vout_thread_sys_t *)&vout[1];
+    vlc_atomic_rc_init(&sys->rc);
 
     vout->p = sys;
     return vout;
@@ -1938,6 +1946,7 @@ vout_thread_t *vout_Create(vlc_object_t *object)
     vlc_mutex_init(&sys->display_lock);
 
     /* Window */
+    sys->window_width = sys->window_height = 0;
     sys->display_cfg.window = vout_display_window_New(vout);
     if (sys->display_cfg.window == NULL) {
         if (sys->spu)
@@ -1954,9 +1963,6 @@ vout_thread_t *vout_Create(vlc_object_t *object)
     /* Arbitrary initial time */
     vout_chrono_Init(&sys->render, 5, VLC_TICK_FROM_MS(10));
 
-    /* */
-    atomic_init(&sys->refs, 0);
-
     if (var_InheritBool(vout, "video-wallpaper"))
         vout_window_SetState(sys->display_cfg.window, VOUT_WINDOW_STATE_BELOW);
     else if (var_InheritBool(vout, "video-on-top"))
@@ -1969,7 +1975,7 @@ vout_thread_t *vout_Hold(vout_thread_t *vout)
 {
     vout_thread_sys_t *sys = vout->p;
 
-    atomic_fetch_add_explicit(&sys->refs, 1, memory_order_relaxed);
+    vlc_atomic_rc_inc(&sys->rc);
     return vout;
 }
 

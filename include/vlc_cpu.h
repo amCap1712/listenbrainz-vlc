@@ -26,7 +26,18 @@
 #ifndef VLC_CPU_H
 # define VLC_CPU_H 1
 
+/**
+ * Retrieves CPU capability flags.
+ */
 VLC_API unsigned vlc_CPU(void);
+
+/**
+ * Computes CPU capability flags.
+ *
+ * Do not call this function directly.
+ * Call vlc_CPU() instead, which caches the correct value.
+ */
+unsigned vlc_CPU_raw(void);
 
 # if defined (__i386__) || defined (__x86_64__)
 #  define HAVE_FPU 1

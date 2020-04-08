@@ -323,10 +323,9 @@ renderer_xyz12_prepare_shader(const struct vlc_gl_renderer *renderer,
     vt->Uniform1i(renderer->uloc.Texture[0], 0);
 }
 
-static GLuint
+static char *
 xyz12_shader_init(struct vlc_gl_renderer *renderer)
 {
-    const opengl_vtable_t *vt = renderer->vt;
     renderer->pf_fetch_locations = renderer_xyz12_fetch_locations;
     renderer->pf_prepare_shader = renderer_xyz12_prepare_shader;
 
@@ -337,8 +336,6 @@ xyz12_shader_init(struct vlc_gl_renderer *renderer)
      *  - reverse RGB gamma correction
      */
     static const char *template =
-        "#version %u\n"
-        "%s"
         "uniform sampler2D Texture0;"
         "uniform vec4 xyz_gamma = vec4(2.6);"
         "uniform vec4 rgb_gamma = vec4(1.0/2.2);"
@@ -350,28 +347,24 @@ xyz12_shader_init(struct vlc_gl_renderer *renderer)
         "    0.0,      0.0,         0.0,        1.0 "
         " );"
 
-        "varying vec2 TexCoord0;"
-        "void main()"
+        "uniform mat4 TransformMatrix;\n"
+        "uniform mat4 OrientationMatrix;\n"
+        "uniform mat3 TexCoordsMap0;\n"
+        "vec4 vlc_texture(vec2 pic_coords)\n"
         "{ "
         " vec4 v_in, v_out;"
-        " v_in  = texture2D(Texture0, TexCoord0);"
+        /* Homogeneous (oriented) coordinates */
+        " vec3 pic_hcoords = vec3((TransformMatrix * OrientationMatrix * vec4(pic_coords, 0.0, 1.0)).st, 1.0);\n"
+        " vec2 tex_coords = (TexCoordsMap0 * pic_hcoords).st;\n"
+        " v_in  = texture2D(Texture0, tex_coords);\n"
         " v_in = pow(v_in, xyz_gamma);"
         " v_out = matrix_xyz_rgb * v_in ;"
         " v_out = pow(v_out, rgb_gamma) ;"
         " v_out = clamp(v_out, 0.0, 1.0) ;"
-        " gl_FragColor = v_out;"
-        "}";
+        " return v_out;"
+        "}\n";
 
-    char *code;
-    if (asprintf(&code, template, renderer->glsl_version,
-                 renderer->glsl_precision_header) < 0)
-        return 0;
-
-    GLuint fragment_shader = vt->CreateShader(GL_FRAGMENT_SHADER);
-    vt->ShaderSource(fragment_shader, 1, (const char **) &code, NULL);
-    vt->CompileShader(fragment_shader);
-    free(code);
-    return fragment_shader;
+    return strdup(template);
 }
 
 static int
@@ -381,7 +374,7 @@ opengl_init_swizzle(const struct vlc_gl_interop *interop,
                     const vlc_chroma_description_t *desc)
 {
     GLint oneplane_texfmt;
-    if (vlc_gl_StrHasToken(interop->glexts, "GL_ARB_texture_rg"))
+    if (vlc_gl_StrHasToken(interop->api->extensions, "GL_ARB_texture_rg"))
         oneplane_texfmt = GL_RED;
     else
         oneplane_texfmt = GL_LUMINANCE;
@@ -433,12 +426,11 @@ opengl_init_swizzle(const struct vlc_gl_interop *interop,
     return VLC_SUCCESS;
 }
 
-GLuint
+char *
 opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
                             vlc_fourcc_t chroma, video_color_space_t yuv_space)
 {
     struct vlc_gl_interop *interop = renderer->interop;
-    const opengl_vtable_t *vt = renderer->vt;
 
     const char *swizzle_per_tex[PICTURE_PLANE_MAX] = { NULL, };
     const bool is_yuv = vlc_fourcc_IsYUV(chroma);
@@ -446,7 +438,7 @@ opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
 
     const vlc_chroma_description_t *desc = vlc_fourcc_GetChromaDescription(chroma);
     if (desc == NULL)
-        return 0;
+        return NULL;
 
     if (chroma == VLC_CODEC_XYZ12)
         return xyz12_shader_init(renderer);
@@ -455,29 +447,26 @@ opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
     {
         ret = renderer_yuv_base_init(renderer, chroma, desc, yuv_space);
         if (ret != VLC_SUCCESS)
-            return 0;
+            return NULL;
         ret = opengl_init_swizzle(renderer->interop, swizzle_per_tex, chroma, desc);
         if (ret != VLC_SUCCESS)
-            return 0;
+            return NULL;
     }
 
-    const char *sampler, *lookup, *coord_name;
+    const char *sampler, *lookup;
     switch (tex_target)
     {
         case GL_TEXTURE_EXTERNAL_OES:
             sampler = "samplerExternalOES";
             lookup = "texture2D";
-            coord_name = "TexCoord";
             break;
         case GL_TEXTURE_2D:
             sampler = "sampler2D";
             lookup  = "texture2D";
-            coord_name = "TexCoord";
             break;
         case GL_TEXTURE_RECTANGLE:
             sampler = "sampler2DRect";
             lookup  = "texture2DRect";
-            coord_name = "TexCoordRect";
             break;
         default:
             vlc_assert_unreachable();
@@ -485,21 +474,16 @@ opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
 
     struct vlc_memstream ms;
     if (vlc_memstream_open(&ms) != 0)
-        return 0;
+        return NULL;
 
 #define ADD(x) vlc_memstream_puts(&ms, x)
 #define ADDF(x, ...) vlc_memstream_printf(&ms, x, ##__VA_ARGS__)
 
-    ADDF("#version %u\n", renderer->glsl_version);
-
-    if (tex_target == GL_TEXTURE_EXTERNAL_OES)
-        ADDF("#extension GL_OES_EGL_image_external : require\n");
-
-    ADDF("%s", renderer->glsl_precision_header);
-
+    ADD("uniform mat4 TransformMatrix;\n"
+        "uniform mat4 OrientationMatrix;\n");
     for (unsigned i = 0; i < interop->tex_count; ++i)
         ADDF("uniform %s Texture%u;\n"
-             "varying vec2 TexCoord%u;\n", sampler, i, i);
+             "uniform mat3 TexCoordsMap%u;\n", sampler, i, i);
 
 #ifdef HAVE_LIBPLACEBO
     if (renderer->pl_sh) {
@@ -537,6 +521,7 @@ opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
             {
                 GLint fb_depth = 0;
 #if !defined(USE_OPENGL_ES2)
+                const opengl_vtable_t *vt = renderer->vt;
                 /* fetch framebuffer depth (we are already bound to the default one). */
                 if (vt->GetFramebufferAttachmentParameteriv != NULL)
                     vt->GetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_BACK_LEFT,
@@ -591,14 +576,10 @@ opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
         ADD("uniform mat4 ConvMatrix;\n");
 
     ADD("uniform vec4 FillColor;\n"
-        "void main(void) {\n");
-
-    if (tex_target == GL_TEXTURE_RECTANGLE)
-    {
-        for (unsigned i = 0; i < interop->tex_count; ++i)
-            ADDF(" vec2 TexCoordRect%u = vec2(TexCoord%u.x * TexSize%u.x, "
-                 "TexCoord%u.y * TexSize%u.y);\n", i, i, i, i, i);
-    }
+        "vec4 vlc_texture(vec2 pic_coords) {\n"
+        /* Homogeneous (oriented) coordinates */
+        " vec3 pic_hcoords = vec3((TransformMatrix * OrientationMatrix * vec4(pic_coords, 0.0, 1.0)).st, 1.0);\n"
+        " vec2 tex_coords;\n");
 
     unsigned color_count;
     if (is_yuv) {
@@ -610,7 +591,14 @@ opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
             const char *swizzle = swizzle_per_tex[i];
             assert(swizzle);
             size_t swizzle_count = strlen(swizzle);
-            ADDF(" texel = %s(Texture%u, %s%u);\n", lookup, i, coord_name, i);
+            ADDF(" tex_coords = (TexCoordsMap%u * pic_hcoords).st;\n", i);
+            if (tex_target == GL_TEXTURE_RECTANGLE)
+            {
+                /* The coordinates are in texels values, not normalized */
+                ADDF(" tex_coords = vec2(tex_coords.x * TexSize%u.x,\n"
+                     "                   tex_coords.y * TexSize%u.y);\n", i, i);
+            }
+            ADDF(" texel = %s(Texture%u, tex_coords);\n", lookup, i);
             for (unsigned j = 0; j < swizzle_count; ++j)
             {
                 ADDF(" pixel[%u] = texel.%c;\n", color_idx, swizzle[j]);
@@ -623,7 +611,8 @@ opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
     }
     else
     {
-        ADDF(" vec4 result = %s(Texture0, %s0);\n", lookup, coord_name);
+        ADD(" tex_coords = (TexCoordsMap0 * pic_hcoords).st;\n");
+        ADDF(" vec4 result = %s(Texture0, tex_coords);\n", lookup);
         color_count = 1;
     }
     assert(yuv_space == COLOR_SPACE_UNDEF || color_count == 3);
@@ -637,31 +626,17 @@ opengl_fragment_shader_init(struct vlc_gl_renderer *renderer, GLenum tex_target,
     }
 #endif
 
-    ADD(" gl_FragColor = result * FillColor;\n"
-        "}");
+    ADD(" return result * FillColor;\n"
+        "}\n");
 
 #undef ADD
 #undef ADDF
 
     if (vlc_memstream_close(&ms) != 0)
-        return 0;
-
-    GLuint fragment_shader = vt->CreateShader(GL_FRAGMENT_SHADER);
-    if (fragment_shader == 0)
-    {
-        free(ms.ptr);
-        return 0;
-    }
-    GLint length = ms.length;
-    vt->ShaderSource(fragment_shader, 1, (const char **)&ms.ptr, &length);
-    vt->CompileShader(fragment_shader);
-    if (renderer->b_dump_shaders)
-        msg_Dbg(renderer->gl, "\n=== Fragment shader for fourcc: %4.4s, colorspace: %d ===\n%s\n",
-                (const char *)&chroma, yuv_space, ms.ptr);
-    free(ms.ptr);
+        return NULL;
 
     renderer->pf_fetch_locations = renderer_base_fetch_locations;
     renderer->pf_prepare_shader = renderer_base_prepare_shader;
 
-    return fragment_shader;
+    return ms.ptr;
 }

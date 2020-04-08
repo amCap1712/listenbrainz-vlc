@@ -21,6 +21,8 @@
 #ifndef VLC_GL_COMMON_H
 #define VLC_GL_COMMON_H
 
+#include <assert.h>
+
 /* if USE_OPENGL_ES2 is defined, OpenGL ES version 2 will be used, otherwise
  * normal OpenGL will be used */
 #ifdef __APPLE__
@@ -93,6 +95,58 @@
 # define GL_DYNAMIC_DRAW 0x88E8
 #endif
 
+#ifndef GL_READ_FRAMEBUFFER
+# define GL_READ_FRAMEBUFFER 0x8CA8
+#endif
+
+#ifndef GL_READ_FRAMEBUFFER_BINDING
+# define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
+#endif
+
+#ifndef GL_DRAW_FRAMEBUFFER
+# define GL_DRAW_FRAMEBUFFER 0x8CA9
+#endif
+
+#ifndef GL_DRAW_FRAMEBUFFER_BINDING
+# define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
+#endif
+
+#ifndef GL_MULTISAMPLE
+# define GL_MULTISAMPLE 0x809D
+#endif
+
+#ifndef GL_COLOR_ATTACHMENT0
+# define GL_COLOR_ATTACHMENT0 0x8CE0
+#endif
+
+#ifndef GL_COLOR_ATTACHMENT1
+# define GL_COLOR_ATTACHMENT1 0x8CE1
+#endif
+
+#ifndef GL_COLOR_ATTACHMENT2
+# define GL_COLOR_ATTACHMENT2 0x8CE2
+#endif
+
+#ifndef GL_COLOR_ATTACHMENT3
+# define GL_COLOR_ATTACHMENT3 0x8CE3
+#endif
+
+#ifndef GL_COLOR_ATTACHMENT4
+# define GL_COLOR_ATTACHMENT4 0x8CE4
+#endif
+
+#ifndef GL_COLOR_ATTACHMENT5
+# define GL_COLOR_ATTACHMENT5 0x8CE5
+#endif
+
+#ifndef GL_COLOR_ATTACHMENT6
+# define GL_COLOR_ATTACHMENT6 0x8CE6
+#endif
+
+#ifndef GL_COLOR_ATTACHMENT7
+# define GL_COLOR_ATTACHMENT7 0x8CE7
+#endif
+
 #ifndef APIENTRY
 # define APIENTRY
 #endif
@@ -107,8 +161,8 @@
 #endif
 
 #ifdef HAVE_GL_ASSERT_NOERROR
-# define GL_ASSERT_NOERROR() do { \
-    GLenum glError = vgl->vt.GetError(); \
+# define GL_ASSERT_NOERROR(vt) do { \
+    GLenum glError = (vt)->GetError(); \
     switch (glError) \
     { \
         case GL_NO_ERROR: break; \
@@ -121,7 +175,7 @@
     } \
 } while(0)
 #else
-# define GL_ASSERT_NOERROR()
+# define GL_ASSERT_NOERROR(vt)
 #endif
 
 /* Core OpenGL/OpenGLES functions: the following functions pointers typedefs

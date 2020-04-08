@@ -42,6 +42,7 @@ Representation::Representation  ( BaseAdaptationSet *set ) :
 {
     b_live = true;
     b_loaded = false;
+    b_failed = false;
     nextUpdateTime = 0;
     targetDuration = 0;
     streamFormat = StreamFormat::UNKNOWN;
@@ -133,19 +134,20 @@ void Representation::scheduleNextUpdate(uint64_t number)
 
 bool Representation::needsUpdate() const
 {
-    return !b_loaded || (isLive() && nextUpdateTime < time(NULL));
+    return !b_failed && (!b_loaded || (isLive() && nextUpdateTime < time(NULL)));
 }
 
-bool Representation::runLocalUpdates(SharedResources *res,
-                                     vlc_tick_t, uint64_t, bool)
+bool Representation::runLocalUpdates(SharedResources *res)
 {
     const time_t now = time(NULL);
     AbstractPlaylist *playlist = getPlaylist();
     if(!b_loaded || (isLive() && nextUpdateTime < now))
     {
         M3U8Parser parser(res);
-        parser.appendSegmentsFromPlaylistURI(playlist->getVLCObject(), this);
-        b_loaded = true;
+        if(!parser.appendSegmentsFromPlaylistURI(playlist->getVLCObject(), this))
+            b_failed = true;
+        else
+            b_loaded = true;
 
         return true;
     }

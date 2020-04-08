@@ -42,24 +42,6 @@
 #ifndef ENABLE_SOUT
 # include <vlc_sout.h>
 
-void sdp_AddMedia (struct vlc_memstream *sdp, const char *type, const char *protocol,
-                    int dport, unsigned pt, bool bw_indep, unsigned bw,
-                    const char *ptname, unsigned clockrate, unsigned channels,
-                    const char *fmtp)
-{
-    VLC_UNUSED (sdp); VLC_UNUSED (type); VLC_UNUSED (protocol);
-    VLC_UNUSED (dport); VLC_UNUSED (pt); VLC_UNUSED (bw_indep);
-    VLC_UNUSED (bw); VLC_UNUSED (ptname); VLC_UNUSED (clockrate);
-    VLC_UNUSED (channels); VLC_UNUSED (fmtp);
-    assert (sdp == NULL);
-}
-
-void sdp_AddAttribute (struct vlc_memstream *sdp, const char *name, const char *fmt, ...)
-{
-    VLC_UNUSED (sdp); VLC_UNUSED (name); VLC_UNUSED (fmt);
-    assert (sdp == NULL);
-}
-
 noreturn int sout_AccessOutControl(sout_access_out_t *out, int query, ...)
 {
     VLC_UNUSED (out); VLC_UNUSED (query);

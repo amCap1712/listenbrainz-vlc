@@ -3,7 +3,7 @@
 NETTLE_VERSION := 3.4.1
 NETTLE_URL := ftp://ftp.gnu.org/gnu/nettle/nettle-$(NETTLE_VERSION).tar.gz
 
-ifeq ($(call need_pkg,"nettle >= 2.7"),)
+ifeq ($(call need_pkg,"nettle >= 3.4.1"),)
 PKGS_FOUND += nettle
 endif
 
@@ -12,6 +12,7 @@ ifeq ($(ARCH),arm)
 NETTLE_CONF += --disable-assembler
 endif
 endif
+NETTLE_CONF += --disable-documentation
 
 $(TARBALLS)/nettle-$(NETTLE_VERSION).tar.gz:
 	$(call download_pkg,$(NETTLE_URL),nettle)

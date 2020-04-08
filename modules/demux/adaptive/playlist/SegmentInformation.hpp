@@ -39,13 +39,6 @@ namespace adaptive
         class AbstractPlaylist;
         class ISegment;
 
-        enum Tribool
-        {
-            TRIBOOL_UNKNOWN,
-            TRIBOOL_FALSE,
-            TRIBOOL_TRUE,
-        };
-
         /* common segment elements for period/adaptset/rep 5.3.9.1,
          * with properties inheritance */
         class SegmentInformation : public ICanonicalUrl,
@@ -82,8 +75,6 @@ namespace adaptive
                 ISegment * getNextSegment(SegmentInfoType, uint64_t, uint64_t *, bool *) const;
                 bool getSegmentNumberByTime(vlc_tick_t, uint64_t *) const;
                 bool getPlaybackTimeDurationBySegmentNumber(uint64_t, vlc_tick_t *, vlc_tick_t *) const;
-                uint64_t getLiveSegmentNumberByTime(uint64_t, vlc_tick_t) const;
-                uint64_t getLiveStartSegmentNumber(uint64_t) const;
                 bool     getMediaPlaybackRange(vlc_tick_t *, vlc_tick_t *, vlc_tick_t *) const;
                 virtual void updateWith(SegmentInformation *);
                 virtual void mergeWithTimeline(SegmentTimeline *); /* ! don't use with global merge */
@@ -106,17 +97,22 @@ namespace adaptive
                 void setSegmentTemplate(MediaSegmentTemplate *);
                 virtual Url getUrlSegment() const; /* impl */
                 Property<Url *> baseUrl;
-
-            private:
-                void init();
+                void setAvailabilityTimeOffset(vlc_tick_t);
+                void setAvailabilityTimeComplete(bool);
                 SegmentBase *     inheritSegmentBase() const;
                 SegmentList *     inheritSegmentList() const;
                 MediaSegmentTemplate * inheritSegmentTemplate() const;
+                vlc_tick_t        inheritAvailabilityTimeOffset() const;
+                bool              inheritAvailabilityTimeComplete() const;
 
+            private:
+                void init();
                 SegmentBase     *segmentBase;
                 SegmentList     *segmentList;
                 MediaSegmentTemplate *mediaSegmentTemplate;
                 CommonEncryption commonEncryption;
+                Undef<bool>      availabilityTimeComplete;
+                Undef<vlc_tick_t>availabilityTimeOffset;
         };
     }
 }

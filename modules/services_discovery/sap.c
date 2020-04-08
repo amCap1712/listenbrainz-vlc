@@ -91,10 +91,6 @@
        "This enables actual parsing of the announces by the SAP module. " \
        "Otherwise, all announcements are parsed by the \"live555\" " \
        "(RTP/RTSP) module." )
-#define SAP_STRICT_TEXT N_( "SAP Strict mode" )
-#define SAP_STRICT_LONGTEXT N_( \
-       "When this is set, the SAP parser will discard some non-compliant " \
-       "announcements." )
 
 /* Callbacks */
     static int  Open ( vlc_object_t * );
@@ -118,8 +114,7 @@ vlc_module_begin ()
                  SAP_TIMEOUT_TEXT, SAP_TIMEOUT_LONGTEXT, true )
     add_bool( "sap-parse", true,
                SAP_PARSE_TEXT,SAP_PARSE_LONGTEXT, true )
-    add_bool( "sap-strict", false,
-               SAP_STRICT_TEXT,SAP_STRICT_LONGTEXT, true )
+    add_obsolete_bool( "sap-strict" ) /* since 4.0.0 */
     add_obsolete_bool( "sap-timeshift" ) /* Redumdant since 1.0.0 */
 
     set_capability( "services_discovery", 0 )
@@ -163,10 +158,6 @@ struct  sdp_t
 
     /* o field */
     char     username[64];
-    uint64_t session_id;
-    uint64_t session_version;
-    unsigned orig_ip_version;
-    char     orig_host[1024];
 
     /* s= field */
     char *psz_sessionname;
@@ -223,7 +214,6 @@ typedef struct
     struct sap_announce_t **pp_announces;
 
     /* Modes */
-    bool  b_strict;
     bool  b_parse;
 
     vlc_tick_t i_timeout;
@@ -258,7 +248,6 @@ typedef struct
     static const char *FindAttribute (const sdp_t *sdp, unsigned media,
                                       const char *name);
 
-    static bool IsSameSession( sdp_t *p_sdp1, sdp_t *p_sdp2 );
     static int InitSocket( services_discovery_t *p_sd, const char *psz_address, int i_port );
     static int Decompress( const unsigned char *psz_src, unsigned char **_dst, int i_len );
     static void FreeSDP( sdp_t *p_sdp );
@@ -300,7 +289,6 @@ static int Open( vlc_object_t *p_this )
     p_sys->pi_fd = NULL;
     p_sys->i_fd = 0;
 
-    p_sys->b_strict = var_CreateGetBool( p_sd, "sap-strict");
     p_sys->b_parse = var_CreateGetBool( p_sd, "sap-parse" );
 
     p_sys->i_announces = 0;
@@ -683,11 +671,8 @@ static int ParseSAP( services_discovery_t *p_sd, const uint8_t *buf,
 
     uint16_t i_hash = U16_AT (buf + 2);
 
-    if( p_sys->b_strict && i_hash == 0 )
-    {
-        msg_Dbg( p_sd, "strict mode, discarding announce with null id hash");
+    if( i_hash == 0 )
         return VLC_EGENERIC;
-    }
 
     buf += 4;
     if( b_ipv6 )
@@ -781,9 +766,8 @@ static int ParseSAP( services_discovery_t *p_sd, const uint8_t *buf,
     {
         sap_announce_t * p_announce = p_sys->pp_announces[i];
         /* FIXME: slow */
-        if( ( !i_hash && IsSameSession( p_announce->p_sdp, p_sdp ) )
-            || ( i_hash && p_announce->i_hash == i_hash
-                 && !memcmp(p_announce->i_source, i_source, sizeof(i_source)) ) )
+        if (p_announce->i_hash == i_hash
+         && memcmp(p_announce->i_source, i_source, sizeof (i_source)) == 0)
         {
             /* We don't support delete announcement as they can easily
              * Be used to highjack an announcement by a third party.
@@ -1253,18 +1237,13 @@ static sdp_t *ParseSDP (vlc_object_t *p_obj, const char *psz_sdp)
                     goto error;
                 }
 
-                if ((sscanf (data, "%63s %"SCNu64" %"SCNu64" IN IP%u %1023s",
-                             p_sdp->username, &p_sdp->session_id,
-                             &p_sdp->session_version, &p_sdp->orig_ip_version,
-                             p_sdp->orig_host) != 5)
-                 || ((p_sdp->orig_ip_version != 4)
-                  && (p_sdp->orig_ip_version != 6)))
+                if (sscanf(data, "%63s %*u %*u IN %*s %*s%n",
+                           p_sdp->username, &(int){ 0 }) != 2)
                 {
                     msg_Dbg (p_obj, "SDP origin not supported: %s", data);
                     /* Or maybe out-of-range, but this looks suspicious */
                     goto error;
                 }
-                EnsureUTF8 (p_sdp->orig_host);
                 break;
 
             case 'S':
@@ -1582,27 +1561,6 @@ static int RemoveAnnounce( services_discovery_t *p_sd,
     free( p_announce );
 
     return VLC_SUCCESS;
-}
-
-/*
- * Compare two sessions, when hash is not set (SAP v0)
- */
-static bool IsSameSession( sdp_t *p_sdp1, sdp_t *p_sdp2 )
-{
-    /* A session is identified by
-     * - username,
-     * - session_id,
-     * - network type (which is always IN),
-     * - address type (currently, this means IP version),
-     * - and hostname.
-     */
-    if (strcmp (p_sdp1->username, p_sdp2->username)
-     || (p_sdp1->session_id != p_sdp2->session_id)
-     || (p_sdp1->orig_ip_version != p_sdp2->orig_ip_version)
-     || strcmp (p_sdp1->orig_host, p_sdp2->orig_host))
-        return false;
-
-    return true;
 }
 
 static inline attribute_t *MakeAttribute (const char *str)

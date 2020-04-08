@@ -90,63 +90,6 @@ static bool IsSDPString (const char *str)
     return true;
 }
 
-static void vsdp_AddAttribute(struct vlc_memstream *restrict stream,
-                              const char *name, const char *fmt, va_list ap)
-{
-    if (fmt == NULL)
-    {
-        vlc_memstream_printf(stream, "a=%s\r\n", name);
-        return;
-    }
-    vlc_memstream_printf(stream, "a=%s:", name);
-    vlc_memstream_vprintf(stream, fmt, ap);
-    vlc_memstream_puts(stream, "\r\n");
-}
-
-void sdp_AddAttribute(struct vlc_memstream *restrict stream, const char *name,
-                      const char *fmt, ...)
-{
-    va_list ap;
-
-    va_start(ap, fmt);
-    vsdp_AddAttribute(stream, name, fmt, ap);
-    va_end(ap);
-}
-
-void sdp_AddMedia(struct vlc_memstream *restrict stream,
-                  const char *type, const char *proto, int dport,
-                  unsigned pt, bool bw_indep, unsigned bw,
-                  const char *ptname, unsigned clock, unsigned chans,
-                  const char *fmtp)
-{
-    /* Some default values */
-    if (type == NULL)
-        type = "video";
-    if (proto == NULL)
-        proto = "RTP/AVP";
-    assert (pt < 128u);
-
-    vlc_memstream_printf(stream, "m=%s %u %s %u\r\n", type, dport, proto, pt);
-
-    if (bw > 0)
-        vlc_memstream_printf(stream, "b=%s:%u\r\n",
-                             bw_indep ? "TIAS" : "AS", bw);
-    vlc_memstream_printf(stream, "b=%s:%u\r\n", "RR", 0);
-
-    /* RTP payload type map */
-    if (ptname != NULL)
-    {
-        vlc_memstream_printf(stream, "a=rtpmap:%u %s/%u", pt, ptname, clock);
-        if ((strcmp(type, "audio") == 0) && (chans != 1))
-            vlc_memstream_printf(stream, "/%u", chans);
-        vlc_memstream_puts(stream, "\r\n");
-    }
-
-    /* Format parameters */
-    if (fmtp != NULL)
-        vlc_memstream_printf(stream, "a=fmtp:%u %s\r\n", pt, fmtp);
-}
-
 int vlc_sdp_Start(struct vlc_memstream *restrict stream,
                   vlc_object_t *obj, const char *cfgpref,
                   const struct sockaddr *src, size_t srclen,
@@ -202,32 +145,8 @@ int vlc_sdp_Start(struct vlc_memstream *restrict stream,
         vlc_memstream_printf(stream, "i=%s\r\n", str);
         free(str);
     }
-    else
-        vlc_memstream_printf(stream, "i=%s\r\n", "N/A");
 
-    strcpy(subvar, "url");
-    str = var_GetNonEmptyString(obj, varname);
-    if (str != NULL)
-    {
-        if (!IsSDPString(str))
-            goto error;
-
-        vlc_memstream_printf(stream, "u=%s\r\n", str);
-        free(str);
-    }
-
-    strcpy(subvar, "email");
-    str = var_GetNonEmptyString(obj, varname);
-    if (str != NULL)
-    {
-        if (!IsSDPString(str))
-            goto error;
-
-        vlc_memstream_printf(stream, "e=%s\r\n", str);
-        free(str);
-    }
-
-    // no phone (useless)
+    // no URL, email, no phone (useless)
 
     vlc_memstream_printf(stream, "c=%s\r\n", connection);
     // bandwidth not specified

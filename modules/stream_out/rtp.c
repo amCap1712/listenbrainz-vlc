@@ -101,16 +101,6 @@
 #define DESC_LONGTEXT N_( \
     "This allows you to give a short description with details about the stream, " \
     "that will be announced in the SDP (Session Descriptor)." )
-#define URL_TEXT N_("Session URL")
-#define URL_LONGTEXT N_( \
-    "This allows you to give a URL with more details about the stream " \
-    "(often the website of the streaming organization), that will " \
-    "be announced in the SDP (Session Descriptor)." )
-#define EMAIL_TEXT N_("Session email")
-#define EMAIL_LONGTEXT N_( \
-    "This allows you to give a contact mail address for the stream, that will " \
-    "be announced in the SDP (Session Descriptor)." )
-
 #define PORT_TEXT N_("Port")
 #define PORT_LONGTEXT N_( \
     "This allows you to specify the base port for the RTP streaming." )
@@ -205,10 +195,8 @@ vlc_module_begin ()
     add_string( SOUT_CFG_PREFIX "cat", "", CAT_TEXT, CAT_LONGTEXT, true )
     add_string( SOUT_CFG_PREFIX "description", "", DESC_TEXT,
                 DESC_LONGTEXT, true )
-    add_string( SOUT_CFG_PREFIX "url", "", URL_TEXT,
-                URL_LONGTEXT, true )
-    add_string( SOUT_CFG_PREFIX "email", "", EMAIL_TEXT,
-                EMAIL_LONGTEXT, true )
+    add_obsolete_string( SOUT_CFG_PREFIX "url" ) /* since 4.0.0 */
+    add_obsolete_string( SOUT_CFG_PREFIX "email" ) /* since 4.0.0 */
     add_obsolete_string( SOUT_CFG_PREFIX "phone" ) /* since 3.0.0 */
 
     add_string( SOUT_CFG_PREFIX "proto", "udp", PROTO_TEXT,
@@ -246,8 +234,7 @@ vlc_module_end ()
  *****************************************************************************/
 static const char *const ppsz_sout_options[] = {
     "dst", "name", "cat", "port", "port-audio", "port-video", "*sdp", "ttl",
-    "mux", "sap", "description", "url", "email",
-    "proto", "rtcp-mux", "caching",
+    "mux", "sap", "description", "proto", "rtcp-mux", "caching",
 #ifdef HAVE_SRTP
     "key", "salt",
 #endif
@@ -731,7 +718,7 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
      * output chain with two different RTSP URLs if you need to handle this
      * scenario.
      */
-    int inclport;
+    bool inclport;
 
     vlc_mutex_lock( &p_sys->lock_es );
     if( unlikely(p_sys->i_es == 0 || (rtsp_url != NULL && !p_sys->es[0]->rtsp_id)) )
@@ -739,7 +726,7 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
 
     if( p_sys->psz_destination != NULL )
     {
-        inclport = 1;
+        inclport = true;
 
         /* Oh boy, this is really ugly! */
         dstlen = sizeof( dst );
@@ -752,7 +739,7 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
     }
     else
     {
-        inclport = 0;
+        inclport = false;
 
         /* Check against URL format rtsp://[<ipv6>]:<port>/<path> */
         bool ipv6 = rtsp_url != NULL && strlen( rtsp_url ) > 7
@@ -774,10 +761,10 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
 
     /* TODO: a=source-filter */
     if( p_sys->rtcp_mux )
-        sdp_AddAttribute( &sdp, "rtcp-mux", NULL );
+        vlc_memstream_puts(&sdp, "a=rtcp-mux\r\n");
 
     if( rtsp_url != NULL )
-        sdp_AddAttribute ( &sdp, "control", "%s", rtsp_url );
+        vlc_memstream_printf(&sdp, "a=control:%s\r\n", rtsp_url);
 
     const char *proto = "RTP/AVP"; /* protocol */
     if( rtsp_url == NULL )
@@ -818,31 +805,47 @@ char *SDPGenerate( sout_stream_t *p_stream, const char *rtsp_url )
                 continue;
         }
 
-        sdp_AddMedia( &sdp, mime_major, proto, inclport * id->i_port,
-                      rtp_fmt->payload_type, false, rtp_fmt->bitrate,
-                      rtp_fmt->ptname, rtp_fmt->clock_rate, rtp_fmt->channels,
-                      rtp_fmt->fmtp);
+        vlc_memstream_printf(&sdp, "m=%s %u %s %"PRIu8"\r\n", mime_major,
+                             inclport ? id->i_port : 0, proto,
+                             rtp_fmt->payload_type);
+
+        if (rtp_fmt->bitrate > 0)
+            vlc_memstream_printf(&sdp, "b=AS:%u\r\n", rtp_fmt->bitrate);
+        vlc_memstream_puts(&sdp, "b=RR:0\r\n");
+
+        /* RTP payload type map */
+        vlc_memstream_printf(&sdp, "a=rtpmap:%"PRIu8" %s/%u",
+                             rtp_fmt->payload_type, rtp_fmt->ptname,
+                             rtp_fmt->clock_rate);
+        if (rtp_fmt->cat == AUDIO_ES && rtp_fmt->channels != 1)
+            vlc_memstream_printf(&sdp, "/%u", rtp_fmt->channels);
+        vlc_memstream_puts(&sdp, "\r\n");
+
+        /* Format parameters */
+        if (rtp_fmt->fmtp != NULL)
+            vlc_memstream_printf(&sdp, "a=fmtp:%"PRIu8" %s\r\n",
+                                 rtp_fmt->payload_type, rtp_fmt->fmtp);
 
         /* cf RFC4566 §5.14 */
         if( inclport && !p_sys->rtcp_mux && (id->i_port & 1) )
-            sdp_AddAttribute( &sdp, "rtcp", "%u", id->i_port + 1 );
+            vlc_memstream_printf(&sdp, "a=rtcp:%u\r\n", id->i_port + 1);
 
         if( rtsp_url != NULL )
         {
             char *track_url = RtspAppendTrackPath( id->rtsp_id, rtsp_url );
             if( track_url != NULL )
             {
-                sdp_AddAttribute( &sdp, "control", "%s", track_url );
+                vlc_memstream_printf(&sdp, "a=control:%s\r\n", track_url);
                 free( track_url );
             }
         }
         else
         {
             if( id->listen.fd != NULL )
-                sdp_AddAttribute( &sdp, "setup", "passive" );
+                vlc_memstream_puts(&sdp, "a=setup:passive\r\n");
             if( p_sys->proto == IPPROTO_DCCP )
-                sdp_AddAttribute( &sdp, "dccp-service-code", "SC:RTP%c",
-                                  toupper( (unsigned char)mime_major[0] ) );
+                vlc_memstream_printf(&sdp, "a=dccp-service-code:SC:RTP%c",
+                                     toupper((unsigned char)mime_major[0]));
         }
     }
 

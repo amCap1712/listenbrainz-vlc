@@ -29,6 +29,8 @@
 # include "config.h"
 #endif
 
+#include <stdatomic.h>
+
 #include <vlc_common.h>
 #include <vlc_cpu.h>
 #include <vlc_memstream.h>
@@ -54,8 +56,6 @@
 #include <sys/sysctl.h>
 #include <machine/cpu.h>
 #endif
-
-static uint32_t cpu_flags;
 
 #if defined (__i386__) || defined (__x86_64__) || defined (__powerpc__) \
  || defined (__ppc__) || defined (__ppc64__) || defined (__powerpc64__)
@@ -113,51 +113,49 @@ static void Altivec_test (void)
 #endif
 
 /**
- * Determines the CPU capabilities and stores them in cpu_flags.
- * The result can be retrieved with vlc_CPU().
+ * Determines the CPU capabilities.
  */
-static void vlc_CPU_init(void)
+VLC_WEAK unsigned vlc_CPU_raw(void)
 {
     uint32_t i_capabilities = 0;
 
 #if defined( __i386__ ) || defined( __x86_64__ )
-     unsigned int i_eax, i_ebx, i_ecx, i_edx;
-     bool b_amd;
+    unsigned int i_eax, i_ebx, i_ecx, i_edx;
+    bool b_amd;
 
     /* Needed for x86 CPU capabilities detection */
 # if defined (__i386__) && defined (__PIC__)
 #  define cpuid(reg) \
-     asm volatile ("xchgl %%ebx,%1\n\t" \
-                   "cpuid\n\t" \
-                   "xchgl %%ebx,%1\n\t" \
-                   : "=a" (i_eax), "=r" (i_ebx), "=c" (i_ecx), "=d" (i_edx) \
-                   : "a" (reg) \
-                   : "cc");
+    asm volatile ("xchgl %%ebx,%1\n\t" \
+                  "cpuid\n\t" \
+                  "xchgl %%ebx,%1\n\t" \
+                  : "=a" (i_eax), "=r" (i_ebx), "=c" (i_ecx), "=d" (i_edx) \
+                  : "a" (reg) \
+                  : "cc");
 # else
 #  define cpuid(reg) \
-     asm volatile ("cpuid\n\t" \
-                   : "=a" (i_eax), "=b" (i_ebx), "=c" (i_ecx), "=d" (i_edx) \
-                   : "a" (reg) \
-                   : "cc");
+    asm volatile ("cpuid\n\t" \
+                  : "=a" (i_eax), "=b" (i_ebx), "=c" (i_ecx), "=d" (i_edx) \
+                  : "a" (reg) \
+                  : "cc");
 # endif
      /* Check if the OS really supports the requested instructions */
 # if defined (__i386__) && !defined (__i486__) && !defined (__i586__) \
   && !defined (__i686__) && !defined (__pentium4__) \
   && !defined (__k6__) && !defined (__athlon__) && !defined (__k8__)
     /* check if cpuid instruction is supported */
-    asm volatile ( "push %%ebx\n\t"
-                   "pushf\n\t"
-                   "pop %%eax\n\t"
-                   "movl %%eax, %%ebx\n\t"
-                   "xorl $0x200000, %%eax\n\t"
-                   "push %%eax\n\t"
-                   "popf\n\t"
-                   "pushf\n\t"
-                   "pop %%eax\n\t"
-                   "movl %%ebx,%1\n\t"
-                   "pop %%ebx\n\t"
-                 : "=a" ( i_eax ),
-                   "=r" ( i_ebx )
+   asm volatile ("push %%ebx\n\t"
+                 "pushf\n\t"
+                 "pop %%eax\n\t"
+                 "movl %%eax, %%ebx\n\t"
+                 "xorl $0x200000, %%eax\n\t"
+                 "push %%eax\n\t"
+                 "popf\n\t"
+                 "pushf\n\t"
+                 "pop %%eax\n\t"
+                 "movl %%ebx,%1\n\t"
+                 "pop %%ebx\n\t"
+                 : "=a" (i_eax), "=r" (i_ebx)
                  :
                  : "cc" );
 
@@ -248,18 +246,20 @@ out:
 #   endif
 
 #endif
-
-    cpu_flags = i_capabilities;
+    return i_capabilities;
 }
 
-/**
- * Retrieves pre-computed CPU capability flags
- */
-VLC_WEAK unsigned vlc_CPU(void)
+unsigned vlc_CPU(void)
 {
-    static vlc_once_t once = VLC_STATIC_ONCE;
-    vlc_once(&once, vlc_CPU_init);
-    return cpu_flags;
+    static atomic_uint cpu_flags = ATOMIC_VAR_INIT(-1);
+    unsigned flags = atomic_load_explicit(&cpu_flags, memory_order_relaxed);
+
+    if (unlikely(flags == -1U)) {
+        flags = vlc_CPU_raw();
+        atomic_store_explicit(&cpu_flags, flags, memory_order_relaxed);
+    }
+
+    return flags;
 }
 
 void vlc_CPU_dump (vlc_object_t *obj)

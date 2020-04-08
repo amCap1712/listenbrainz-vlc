@@ -393,7 +393,7 @@ libvlccore_la_SOURCES = \
 libvlccore_la_LIBADD = $(LIBS_libvlccore) \
 	../compat/libcompat.la \
 	$(LTLIBINTL) $(LTLIBICONV) \
-	$(IDN_LIBS) $(SOCKET_LIBS) $(LIBRT) $(LIBDL) $(LIBM)
+	$(IDN_LIBS) $(SOCKET_LIBS) $(ATOMIC_LIB) $(LIBRT) $(LIBDL) $(LIBM)
 
 if HAVE_WIN32
 libvlccore_la_SOURCES += \
@@ -440,8 +440,7 @@ endif
 if HAVE_DARWIN
 libvlccore_la_SOURCES += \
 	darwin/error.c \
-	darwin/specific.c \
-	darwin/thread.c
+	darwin/specific.c
 libvlccore_objc_la_SOURCES = \
 	darwin/dirs.m \
 	darwin/netconf.m
@@ -481,15 +480,16 @@ if !HAVE_LINUX
 libvlccore_la_SOURCES += posix/wait.c
 endif
 if !HAVE_ANDROID
-libvlccore_la_SOURCES += posix/sort.c
+libvlccore_la_SOURCES += \
+	posix/sort.c \
+	posix/thread.c
 if !HAVE_DARWIN
 libvlccore_la_SOURCES += \
 	posix/dirs.c \
 	posix/error.c \
 	posix/netconf.c \
 	posix/picture.c \
-	posix/specific.c \
-	posix/thread.c
+	posix/specific.c
 if HAVE_LIBANL
 libvlccore_la_SOURCES += \
 	linux/getaddrinfo.c
@@ -586,7 +586,8 @@ check_PROGRAMS = \
 	test_playlist \
 	test_randomizer \
 	test_media_source \
-	test_extensions
+	test_extensions \
+	test_thread
 
 TESTS = $(check_PROGRAMS) check_symbols
 
@@ -632,6 +633,7 @@ test_media_source_CFLAGS = -DTEST_MEDIA_SOURCE
 test_media_source_SOURCES = media_source/test.c \
 	media_source/media_source.c \
 	media_source/media_tree.c
+test_thread_SOURCES = test/thread.c
 
 AM_LDFLAGS = -no-install
 LDADD = libvlccore.la \

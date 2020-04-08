@@ -25,6 +25,11 @@
 # include "config.h"
 #endif
 
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0601 // _WIN32_WINNT_WIN7
+# undef _WIN32_WINNT
+# define _WIN32_WINNT 0x0601 // _WIN32_WINNT_WIN7
+#endif
+
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_vout_display.h>
@@ -37,11 +42,6 @@
 
 #include <assert.h>
 #include <math.h>
-
-#if !defined(_WIN32_WINNT) || _WIN32_WINNT < _WIN32_WINNT_WIN7
-# undef _WIN32_WINNT
-# define _WIN32_WINNT _WIN32_WINNT_WIN7
-#endif
 
 #define COBJMACROS
 #include <initguid.h>
@@ -337,8 +337,10 @@ static int Open(vout_display_t *vd, const vout_display_cfg_t *cfg,
         sys->selectPlaneCb       = LocalSwapchainSelectPlane;
     }
 
+#if !VLC_WINSTORE_APP
     if (vd->source.projection_mode != PROJECTION_MODE_RECTANGULAR && sys->sys.hvideownd)
         sys->p_sensors = HookWindowsSensors(vd, sys->sys.hvideownd);
+#endif // !VLC_WINSTORE_APP
 
     if (Direct3D11Open(vd, fmtp, context)) {
         msg_Err(vd, "Direct3D11 could not be opened");
@@ -378,8 +380,8 @@ static void Close(vout_display_t *vd)
 {
     D3D11_ReleaseShaders(&vd->sys->shaders);
     Direct3D11Close(vd);
-    UnhookWindowsSensors(vd->sys->p_sensors);
 #if !VLC_WINSTORE_APP
+    UnhookWindowsSensors(vd->sys->p_sensors);
     CommonWindowClean(VLC_OBJECT(vd), &vd->sys->sys);
 #endif
 }
@@ -672,6 +674,19 @@ static void Prepare(vout_display_t *vd, picture_t *picture,
     VLC_UNUSED(date);
 
     d3d11_device_lock( sys->d3d_dev );
+#if VLC_WINSTORE_APP
+    if ( sys->swapCb == LocalSwapchainSwap )
+    {
+        /* legacy UWP mode, the width/height was set in GUID_SWAPCHAIN_WIDTH/HEIGHT */
+        uint32_t i_width;
+        uint32_t i_height;
+        if (LocalSwapchainWinstoreSize( sys->outside_opaque, &i_width, &i_height ))
+        {
+            if (i_width != sys->area.vdcfg.display.width || i_height != sys->area.vdcfg.display.height)
+                vout_display_SetSize(vd, i_width, i_height);
+        }
+    }
+#endif
     if ( sys->startEndRenderingCb( sys->outside_opaque, true ))
     {
         if ( sys->sendMetadataCb && picture->format.mastering.max_luminance )
@@ -736,7 +751,7 @@ static const d3d_format_t *GetDisplayFormatByDepth(vout_display_t *vd, uint8_t b
     if (from_processor)
         supportFlags |= D3D11_FORMAT_SUPPORT_VIDEO_PROCESSOR_OUTPUT;
     return FindD3D11Format( vd, vd->sys->d3d_dev, 0, rgb_yuv,
-                            bit_depth, widthDenominator, heightDenominator,
+                            bit_depth, widthDenominator+1, heightDenominator+1,
                             D3D11_CHROMA_CPU, supportFlags );
 }
 

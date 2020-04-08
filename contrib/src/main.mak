@@ -45,15 +45,7 @@ ifeq ($(ARCH)-$(HAVE_WIN32),aarch64-1)
 HAVE_WIN64 := 1
 endif
 
-ifdef HAVE_CROSS_COMPILE
-need_pkg = 1
-else
-ifeq ($(findstring mingw32,$(BUILD)),mingw32)
-need_pkg = $(shell PKG_CONFIG_LIBDIR="${PKG_CONFIG_PATH}" $(PKG_CONFIG) $(1) || echo 1)
-else
 need_pkg = $(shell $(PKG_CONFIG) $(1) || echo 1)
-endif
-endif
 
 ifeq ($(findstring mingw32,$(BUILD)),mingw32)
 MSYS_BUILD := 1
@@ -78,18 +70,11 @@ endif
 ifneq ($(findstring $(origin AR),undefined default),)
 AR := ar
 endif
-ifneq ($(findstring $(origin RANLIB),undefined default),)
-RANLIB := ranlib
-endif
-ifneq ($(findstring $(origin STRIP),undefined default),)
-STRIP := strip
-endif
-ifneq ($(findstring $(origin WIDL),undefined default),)
-WIDL := widl
-endif
-ifneq ($(findstring $(origin WINDRES),undefined default),)
-WINDRES := windres
-endif
+RANLIB ?= ranlib
+STRIP ?= strip
+WIDL ?= widl
+WINDRES ?= windres
+PKG_CONFIG ?= pkg-config
 else
 ifneq ($(findstring $(origin CC),undefined default),)
 CC := $(HOST)-gcc
@@ -103,18 +88,27 @@ endif
 ifneq ($(findstring $(origin AR),undefined default),)
 AR := $(HOST)-ar
 endif
-ifneq ($(findstring $(origin RANLIB),undefined default),)
-RANLIB := $(HOST)-ranlib
+RANLIB ?= $(HOST)-ranlib
+STRIP ?= $(HOST)-strip
+WIDL ?= $(HOST)-widl
+WINDRES ?= $(HOST)-windres
+
+# On Debian x86_64-w64-mingw32-pkg-config exists, runs but returns an error when checking packages
+ifeq ($(shell unset PKG_CONFIG_LIBDIR; $(HOST)-pkg-config --version 1>/dev/null 2>/dev/null || echo FAIL),)
+PKG_CONFIG ?= $(HOST)-pkg-config
+else
+# Use the regular pkg-config and set some PKG_CONFIG_LIBDIR ourselves
+PKG_CONFIG = pkg-config
+ifeq ($(findstring $(origin PKG_CONFIG_LIBDIR),undefined),)
+# an extra PKG_CONFIG_LIBDIR was provided, use it prioritarily
+PKG_CONFIG_LIBDIR := $(PKG_CONFIG_LIBDIR):/usr/$(HOST)/lib/pkgconfig:/usr/lib/$(HOST)/pkgconfig
+else
+PKG_CONFIG_LIBDIR := /usr/$(HOST)/lib/pkgconfig:/usr/lib/$(HOST)/pkgconfig
 endif
-ifneq ($(findstring $(origin STRIP),undefined default),)
-STRIP := $(HOST)-strip
+export PKG_CONFIG_LIBDIR
+need_pkg = $(shell PKG_CONFIG_LIBDIR=$(PKG_CONFIG_LIBDIR) $(PKG_CONFIG) $(1) || echo 1)
 endif
-ifneq ($(findstring $(origin WIDL),undefined default),)
-WIDL := $(HOST)-widl
-endif
-ifneq ($(findstring $(origin WINDRES),undefined default),)
-WINDRES := $(HOST)-windres
-endif
+
 endif
 
 ifdef HAVE_ANDROID
@@ -224,13 +218,10 @@ export ACLOCAL_AMFLAGS
 # Tools #
 #########
 
-PKG_CONFIG ?= pkg-config
 ifdef HAVE_CROSS_COMPILE
 # This inhibits .pc file from within the cross-compilation toolchain sysroot.
 # Hopefully, nobody ever needs that.
 PKG_CONFIG_PATH := /usr/share/pkgconfig
-PKG_CONFIG_LIBDIR := /usr/$(HOST)/lib/pkgconfig:/usr/lib/$(HOST)/pkgconfig
-export PKG_CONFIG_LIBDIR
 endif
 PKG_CONFIG_PATH := $(PREFIX)/lib/pkgconfig:$(PKG_CONFIG_PATH)
 ifeq ($(findstring mingw32,$(BUILD)),mingw32)
@@ -315,7 +306,8 @@ endif
 HOSTTOOLS := \
 	CC="$(CC)" CXX="$(CXX)" LD="$(LD)" \
 	AR="$(AR)" CCAS="$(CCAS)" RANLIB="$(RANLIB)" STRIP="$(STRIP)" \
-	PATH="$(PREFIX)/bin:$(PATH)"
+	PATH="$(PREFIX)/bin:$(PATH)" \
+	PKG_CONFIG="$(PKG_CONFIG)"
 
 HOSTVARS_MESON := $(HOSTTOOLS) \
 	CPPFLAGS="$(CPPFLAGS)" \
@@ -403,6 +395,7 @@ ifdef HAVE_WIN32
 CMAKE += -DCMAKE_DEBUG_POSTFIX:STRING=
 endif
 ifdef MSYS_BUILD
+CMAKE := PKG_CONFIG_LIBDIR="$(PKG_CONFIG_PATH)" $(CMAKE)
 CMAKE += -DCMAKE_LINK_LIBRARY_SUFFIX:STRING=.a
 endif
 
@@ -430,7 +423,8 @@ ifdef HAVE_CROSS_COMPILE
 # generated crossfile, so everything should work as
 # expected.
 MESONFLAGS += --cross-file $(abspath crossfile.meson)
-MESON = env -i PATH="$(PREFIX)/bin:$(PATH)" PKG_CONFIG_LIBDIR="$(PKG_CONFIG_LIBDIR)" meson $(MESONFLAGS)
+MESON = env -i PATH="$(PREFIX)/bin:$(PATH)" PKG_CONFIG_LIBDIR="$(PKG_CONFIG_LIBDIR)" \
+	PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" meson $(MESONFLAGS)
 else
 MESON = meson $(MESONFLAGS)
 endif
@@ -611,7 +605,6 @@ endif
 ifdef HAVE_CROSS_COMPILE
 	echo "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)" >> $@
 	echo "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)" >> $@
-	echo "set(PKG_CONFIG_EXECUTABLE $(PKG_CONFIG))" >> $@
 endif
 
 MESON_SYSTEM_NAME =

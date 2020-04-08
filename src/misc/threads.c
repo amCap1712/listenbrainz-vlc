@@ -51,9 +51,9 @@ void vlc_global_mutex (unsigned n, bool acquire)
         VLC_STATIC_MUTEX, // For MTA holder
 #endif
     };
-    static_assert (VLC_MAX_MUTEX == (sizeof (locks) / sizeof (locks[0])),
+    static_assert (VLC_MAX_MUTEX == ARRAY_SIZE(locks),
                    "Wrong number of global mutexes");
-    assert (n < (sizeof (locks) / sizeof (locks[0])));
+    assert (n < ARRAY_SIZE(locks));
 
     vlc_mutex_t *lock = locks + n;
     if (acquire)
@@ -532,4 +532,44 @@ int vlc_sem_timedwait(vlc_sem_t *sem, vlc_tick_t deadline)
     }
 
     return 0;
+}
+
+enum { VLC_ONCE_UNDONE, VLC_ONCE_DOING, VLC_ONCE_CONTEND, VLC_ONCE_DONE };
+
+static_assert (VLC_ONCE_DONE == 3, "Check vlc_once in header file");
+
+void (vlc_once)(vlc_once_t *restrict once, void (*cb)(void))
+{
+    unsigned int value = VLC_ONCE_UNDONE;
+
+    if (atomic_compare_exchange_strong_explicit(&once->value, &value,
+                                                VLC_ONCE_DOING,
+                                                memory_order_acquire,
+                                                memory_order_acquire)) {
+        /* First time: run the callback */
+        cb();
+
+        if (atomic_exchange_explicit(&once->value, VLC_ONCE_DONE,
+                                     memory_order_release) == VLC_ONCE_CONTEND)
+            /* Notify waiters if any */
+            vlc_atomic_notify_all(&once->value);
+
+        return;
+    }
+
+    assert(value >= VLC_ONCE_DOING);
+
+    if (unlikely(value == VLC_ONCE_DOING)
+     && atomic_compare_exchange_strong_explicit(&once->value, &value,
+                                                VLC_ONCE_CONTEND,
+                                                memory_order_acquire,
+                                                memory_order_acquire))
+        value = VLC_ONCE_CONTEND;
+
+    assert(value >= VLC_ONCE_CONTEND);
+
+    while (unlikely(value != VLC_ONCE_DONE)) {
+        vlc_atomic_wait(&once->value, VLC_ONCE_CONTEND);
+        value = atomic_load_explicit(&once->value, memory_order_acquire);
+    }
 }

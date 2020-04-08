@@ -30,6 +30,7 @@
 #include <vlc_common.h>
 #include <vlc_aout.h>
 #include <vlc_modules.h>
+#include <vlc_atomic.h>
 
 #include "libvlc.h"
 #include "aout_internal.h"
@@ -222,7 +223,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     vlc_mutex_init (&owner->vp.lock);
     vlc_viewpoint_init (&owner->vp.value);
     atomic_init (&owner->vp.update, false);
-    atomic_init(&owner->refs, 0);
+    vlc_atomic_rc_init(&owner->rc);
 
     /* Audio output module callbacks */
     var_Create (aout, "volume", VLC_VAR_FLOAT);
@@ -347,7 +348,7 @@ audio_output_t *aout_Hold(audio_output_t *aout)
 {
     aout_owner_t *owner = aout_owner(aout);
 
-    atomic_fetch_add_explicit(&owner->refs, 1, memory_order_relaxed);
+    vlc_atomic_rc_inc(&owner->rc);
     return aout;
 }
 
@@ -380,7 +381,7 @@ void aout_Release(audio_output_t *aout)
 {
     aout_owner_t *owner = aout_owner(aout);
 
-    if (atomic_fetch_sub_explicit(&owner->refs, 1, memory_order_release))
+    if (!vlc_atomic_rc_dec(&owner->rc))
         return;
 
     atomic_thread_fence(memory_order_acquire);
@@ -652,7 +653,7 @@ int aout_VolumeSet (audio_output_t *aout, float vol)
     int ret;
 
     vlc_mutex_lock(&owner->lock);
-    ret = aout->volume_set(aout, vol);
+    ret = aout->volume_set ? aout->volume_set(aout, vol) : -1;
     vlc_mutex_unlock(&owner->lock);
     return ret ? -1 : 0;
 }
@@ -703,7 +704,7 @@ int aout_MuteSet (audio_output_t *aout, bool mute)
     int ret;
 
     vlc_mutex_lock(&owner->lock);
-    ret = aout->mute_set(aout, mute);
+    ret = aout->mute_set ? aout->mute_set(aout, mute) : -1;
     vlc_mutex_unlock(&owner->lock);
     return ret ? -1 : 0;
 }
@@ -729,7 +730,7 @@ int aout_DeviceSet (audio_output_t *aout, const char *id)
     int ret;
 
     vlc_mutex_lock(&owner->lock);
-    ret = aout->device_select(aout, id);
+    ret = aout->device_select ? aout->device_select(aout, id) : -1;
     vlc_mutex_unlock(&owner->lock);
     return ret ? -1 : 0;
 }

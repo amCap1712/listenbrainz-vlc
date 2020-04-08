@@ -28,11 +28,12 @@ OPTIONS:
    -s            Interactive shell (get correct environment variables for build)
    -b <url>      Enable breakpad support and send crash reports to this URL
    -d            Create PDB files during the build
+   -x            Add extra checks when compiling
 EOF
 }
 
 ARCH="x86_64"
-while getopts "hra:pcli:sb:d" OPTION
+while getopts "hra:pcli:sb:dx" OPTION
 do
      case $OPTION in
          h)
@@ -66,6 +67,9 @@ do
          ;;
          d)
              WITH_PDB="yes"
+         ;;
+         x)
+             EXTRA_CHECKS="yes"
          ;;
      esac
 done
@@ -139,7 +143,6 @@ fi
 cd ../../
 
 export USE_FFMPEG=1
-export PKG_CONFIG_LIBDIR="$PWD/contrib/$TRIPLET/lib/pkgconfig"
 export PATH="$PWD/contrib/$TRIPLET/bin":"$PATH"
 
 if [ "$INTERACTIVE" = "yes" ]; then
@@ -184,9 +187,28 @@ cd ../..
 
 info "Bootstrapping"
 
-${SCRIPT_PATH}/../../../bootstrap
+if ! [ -e ${SCRIPT_PATH}/../../../configure ]; then
+    echo "Bootstraping vlc"
+    ${SCRIPT_PATH}/../../../bootstrap
+fi
 
 info "Configuring VLC"
+if [ -z "$PKG_CONFIG" ]; then
+    if [ `unset PKG_CONFIG_LIBDIR; $TRIPLET-pkg-config --version 1>/dev/null 2>/dev/null || echo FAIL` = "FAIL" ]; then
+        # $TRIPLET-pkg-config DOESNT WORK
+        # on Debian it pretends it works to autoconf
+        export PKG_CONFIG="pkg-config"
+        if [ -z "$PKG_CONFIG_LIBDIR" ]; then
+            export PKG_CONFIG_LIBDIR="/usr/$TRIPLET/lib/pkgconfig:/usr/lib/$TRIPLET/pkgconfig"
+        else
+            export PKG_CONFIG_LIBDIR="$PKG_CONFIG_LIBDIR:/usr/$TRIPLET/lib/pkgconfig:/usr/lib/$TRIPLET/pkgconfig"
+        fi
+    else
+        # $TRIPLET-pkg-config WORKs
+        export PKG_CONFIG="pkg-config"
+    fi
+fi
+
 mkdir -p $SHORTARCH
 cd $SHORTARCH
 
@@ -204,6 +226,10 @@ if [ ! -z "$BREAKPAD" ]; then
 fi
 if [ ! -z "$WITH_PDB" ]; then
     CONFIGFLAGS="$CONFIGFLAGS --enable-pdb"
+fi
+if [ ! -z "$EXTRA_CHECKS" ]; then
+    CFLAGS="$CFLAGS -Werror=incompatible-pointer-types -Werror=missing-field-initializers"
+    CXXFLAGS="$CXXFLAGS -Werror=missing-field-initializers"
 fi
 
 ${SCRIPT_PATH}/configure.sh --host=$TRIPLET --with-contrib=../contrib/$TRIPLET $CONFIGFLAGS
